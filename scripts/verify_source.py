@@ -427,4 +427,12 @@ threshold_start = view_model.index("func applyFeedbackThreshold()")
 threshold_block = view_model[threshold_start:threshold_start + 1800]
 assert "case .unreviewed:\n                segments[index].isSelectedForExport = segments[index].bestDistance <= threshold" in threshold_block, "Threshold action must remain an explicit way to select unreviewed candidates"
 
+
+toggle_start = view_model.index("func toggleSegmentSelection(id: UUID)")
+toggle_block = view_model[toggle_start:toggle_start + 900]
+assert "guard segments[index].reviewState != .rejected else {" in toggle_block, "Rejected candidates must not be manually re-selected for export"
+assert 'statusMessage = "誤検出と判定した候補は切り出し対象にできません。正解に変更してから選択してください。"' in toggle_block, "Rejected-selection explanation missing"
+assert '.disabled(segment.reviewState == .rejected)' in content, "Rejected candidate export toggle must be disabled in UI"
+assert '"誤検出のため対象外"' in content, "Rejected candidate export state must be explicit in UI"
+
 print("Repository regression verification: PASS")
