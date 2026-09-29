@@ -450,6 +450,14 @@ final class VideoAnalysisViewModel: ObservableObject {
         segments.filter(\.isSelectedForExport).count
     }
 
+    var selectedConfirmedCount: Int {
+        segments.filter { $0.isSelectedForExport && $0.reviewState == .confirmed }.count
+    }
+
+    var selectedUnreviewedCount: Int {
+        segments.filter { $0.isSelectedForExport && $0.reviewState == .unreviewed }.count
+    }
+
     var feedbackHasOverlap: Bool {
         let positives = segments.filter { $0.reviewState == .confirmed }.map(\.bestDistance)
         let negatives = segments.filter { $0.reviewState == .rejected }.map(\.bestDistance)
