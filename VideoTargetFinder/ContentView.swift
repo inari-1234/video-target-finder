@@ -24,9 +24,9 @@ struct ContentView: View {
                         runtimeStabilityCard
                     }
                     reviewSettingsCard
-                        .disabled(viewModel.isExporting)
+                        .disabled(viewModel.isExclusiveWorkInProgress)
                     segmentsCard
-                        .disabled(viewModel.isExporting)
+                        .disabled(viewModel.isExclusiveWorkInProgress)
                     if viewModel.confirmedCount > 0 || viewModel.lastFeedbackRescanAddedCount > 0 {
                         feedbackLearningCard
                     }
@@ -149,7 +149,7 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(viewModel.isLoadingVideo || viewModel.isScanning || viewModel.isExporting)
+                .disabled(viewModel.isExclusiveWorkInProgress)
 
                 if viewModel.isLoadingVideo {
                     ProgressView("動画を準備中…")
@@ -188,7 +188,7 @@ struct ContentView: View {
                                         } label: {
                                             Image(systemName: "xmark.circle.fill")
                                         }
-                                        .disabled(viewModel.isScanning || viewModel.isExporting)
+                                        .disabled(viewModel.isExclusiveWorkInProgress)
                                     }
                                 }
                             }
@@ -206,13 +206,13 @@ struct ContentView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.bordered)
-                .disabled(viewModel.isScanning || viewModel.isExporting)
+                .disabled(viewModel.isExclusiveWorkInProgress)
 
                 Divider()
 
                 TextField("対象名（任意・例：ダニエル）", text: $viewModel.targetLabel)
                     .textFieldStyle(.roundedBorder)
-                    .disabled(viewModel.isScanning || viewModel.isExporting)
+                    .disabled(viewModel.isExclusiveWorkInProgress)
                 Text("入力すると精度レポート内で対象名として表示します。認識そのものは対象名ではなく画像特徴で行います。")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -230,7 +230,7 @@ struct ContentView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .disabled(viewModel.isScanning || viewModel.isExporting)
+                .disabled(viewModel.isExclusiveWorkInProgress)
 
                 Text(viewModel.sensitivity.description)
                     .font(.caption)
@@ -243,7 +243,7 @@ struct ContentView: View {
                     Text("5秒").tag(5.0)
                 }
                 .pickerStyle(.segmented)
-                .disabled(viewModel.isScanning || viewModel.isExporting)
+                .disabled(viewModel.isExclusiveWorkInProgress)
 
                 HStack {
                     Text("詳細探索")
@@ -254,7 +254,7 @@ struct ContentView: View {
                         Text("0.50秒").tag(0.50)
                     }
                     .labelsHidden()
-                    .disabled(viewModel.isScanning || viewModel.isExporting)
+                    .disabled(viewModel.isExclusiveWorkInProgress)
                 }
 
                 Text("通常は初期値のままで構いません。候補付近だけを細かく再解析します。")
@@ -297,7 +297,7 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                     }
                     .buttonStyle(.borderedProminent)
-                    .disabled(viewModel.videoAsset == nil || viewModel.referenceImages.isEmpty || viewModel.isExporting)
+                    .disabled(viewModel.videoAsset == nil || viewModel.referenceImages.isEmpty || viewModel.isExclusiveWorkInProgress)
                 }
 
             }
@@ -353,6 +353,7 @@ struct ContentView: View {
                         }
                         .buttonStyle(.bordered)
                     }
+                    .disabled(viewModel.isExclusiveWorkInProgress)
                 }
 
                 Text("高温時は自動的に処理速度を落とし、危険温度では停止します。バックグラウンドへ移ると安全のため一時停止します。")
@@ -566,7 +567,7 @@ struct ContentView: View {
                                 Text("2秒").tag(2.0)
                             }
                             .pickerStyle(.segmented)
-                            .disabled(viewModel.isScanning || viewModel.isExporting)
+                            .disabled(viewModel.isExclusiveWorkInProgress)
                             Text("通常は1秒のままで構いません。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
@@ -654,12 +655,7 @@ struct ContentView: View {
                 .buttonStyle(.borderedProminent)
                 .disabled(
                     !viewModel.canGenerateRecognitionReport ||
-                    viewModel.isScanning ||
-                    viewModel.isExporting ||
-                    viewModel.isPreparingMaskDiagnostics ||
-                    viewModel.isRunningForegroundReserveDiagnostic ||
-                    viewModel.isRunningTrackingSeedDiagnostic ||
-                    viewModel.isRunningObjectTrackingDiagnostic
+                    viewModel.isExclusiveWorkInProgress
                 )
 
                 HStack {
@@ -685,10 +681,7 @@ struct ContentView: View {
                 }
                 .disabled(
                     !viewModel.canGenerateRecognitionReport ||
-                    viewModel.isPreparingMaskDiagnostics ||
-                    viewModel.isRunningForegroundReserveDiagnostic ||
-                    viewModel.isRunningTrackingSeedDiagnostic ||
-                    viewModel.isRunningObjectTrackingDiagnostic
+                    viewModel.isExclusiveWorkInProgress
                 )
 
                 DisclosureGroup("見逃し診断の詳細") {
@@ -900,7 +893,7 @@ struct ContentView: View {
                             .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
-                        .disabled(viewModel.mergedExportRangeCount == 0 || viewModel.isScanning)
+                        .disabled(viewModel.mergedExportRangeCount == 0 || viewModel.isExclusiveWorkInProgress)
                     }
 
                     if let message = viewModel.lastExportMessage {
@@ -1024,7 +1017,7 @@ struct ContentView: View {
                         viewModel.resetSavedSettings()
                     }
                     .buttonStyle(.bordered)
-                    .disabled(viewModel.isScanning || viewModel.isExporting)
+                    .disabled(viewModel.isExclusiveWorkInProgress)
 
                     Button("診断ログを消去", role: .destructive) {
                         viewModel.clearDiagnosticLog()

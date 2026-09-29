@@ -46,9 +46,6 @@ assert "feedbackRescanRuns" in view_model, "Runtime rescan history missing"
 assert "Feedback-rescan total added" in report, "Cumulative rescan label missing"
 assert "Feedback-rescan history" in report, "Per-run rescan history output missing"
 
-print("Repository regression verification: PASS")
-
-
 candidate_budget = Path("VideoTargetFinder/CandidateBudgetAnalyzer.swift").read_text(encoding="utf-8")
 assert "CandidateBudgetAttribution" in candidate_budget, "Candidate budget attribution model missing"
 assert "rankCoveringSegment" in candidate_budget, "Candidate budget rank analyzer missing"
@@ -354,3 +351,80 @@ assert "VNTrackObjectRequest" not in detail_block and "VisionObjectTrackingEngin
 assert "var lost = false" in tracking_engine, "Object tracker must preserve continuous-loss semantics"
 assert "if lost {" in tracking_engine, "Frames after tracking loss must remain lost instead of being reacquired from a stale observation"
 assert tracking_engine.count("lost = true") >= 2, "Both missing-result and request-error paths must terminate continuous tracking"
+
+
+# v0.28 candidate hardening: async work must not overwrite or race user-visible state.
+assert "var isDiagnosticWorkInProgress: Bool" in view_model, "Central diagnostic busy state missing"
+assert "var isExclusiveWorkInProgress: Bool" in view_model, "Central exclusive-work state missing"
+for signature in (
+    "func loadVideo(from result: PHPickerResult)",
+    "func setReferenceImages(_ images: [UIImage])",
+    "func removeReferenceImage(at index: Int)",
+    "func startHighAccuracyScan()",
+    "func reviewSegment(id: UUID, as state: SegmentReviewState)",
+    "func toggleSegmentSelection(id: UUID)",
+    "func selectAllSegments()",
+    "func deselectAllSegments()",
+    "func applyFeedbackThreshold()",
+    "func startFeedbackRescan()",
+    "func prepareMaskingDiagnosticsIfNeeded() async",
+    "func startExport()",
+    "func restoreAndResumeInterruptedScan()",
+    "func discardRecoverableScan()",
+):
+    start = view_model.index(signature)
+    block = view_model[start:start + 700]
+    assert "guard !isExclusiveWorkInProgress" in block, f"Exclusive-work guard missing: {signature}"
+
+for availability in (
+    "var canRunFeedbackRescan: Bool",
+    "var canRunForegroundReserveRerankDiagnostic: Bool",
+    "var canRunTrackingSeedDiagnostic: Bool",
+    "var canRunObjectTrackingDiagnostic: Bool",
+):
+    start = view_model.index(availability)
+    block = view_model[start:start + 500]
+    assert "!isExclusiveWorkInProgress" in block, f"Exclusive-work availability gate missing: {availability}"
+
+restore_start = view_model.index("func restoreAndResumeInterruptedScan()")
+restore_block = view_model[restore_start:restore_start + 1400]
+assert "isLoadingVideo = true" in restore_block, "Recovery preparation must lock competing work immediately"
+assert "defer { self.isLoadingVideo = false }" in restore_block, "Recovery preparation lock must always release"
+
+for publish_gate in (
+    "try Task.checkCancellation()\n                self.foregroundReserveRerankSummary = summary",
+    "try Task.checkCancellation()\n                self.trackingSeedQualitySummary = summary",
+    "try Task.checkCancellation()\n                self.objectTrackingBenchmarkSummary = summary",
+):
+    assert publish_gate in view_model, f"Cancelled diagnostic can still publish stale results: {publish_gate}"
+
+assert content.count(".disabled(viewModel.isExclusiveWorkInProgress)") >= 10, "Main UI mutations are not consistently locked"
+
+runtime_test = Path("scripts/test_video_pipeline_runtime.swift").read_text(encoding="utf-8")
+assert "control-original-generated" in runtime_test, "Robustness control fixture missing"
+assert "let robustnessMatcher = try FeaturePrintMatcher(" in runtime_test, "Dedicated robustness matcher missing"
+robust_start = runtime_test.index("let robustnessMatcher = try FeaturePrintMatcher(")
+robust_end = runtime_test.index("let smallTarget", robust_start)
+assert "negativeImages:" not in runtime_test[robust_start:robust_end], "Robustness matcher must not include hard negatives"
+assert runtime_test.count("matcher: robustnessMatcher") == 4, "Control + three robustness cases must use the isolated matcher"
+
+workflow = Path(".github/workflows/ios-build.yml").read_text(encoding="utf-8")
+assert "video-target-finder-candidate" in workflow, "Candidate push trigger missing"
+assert "workflow_dispatch" not in workflow, "Dead manual-dispatch path must not remain"
+assert "contains(github.event.head_commit.message, '[full-ci]')" in workflow, "Candidate milestone CI marker missing"
+assert Path("scripts/test_frame_region_coverage.swift").exists(), "Frame-region coverage test missing"
+assert "test_frame_region_coverage.swift" in workflow, "Frame-region coverage test not wired into CI"
+
+
+# Candidate review/export contract: newly detected segments must not be exported implicitly.
+assert "var isSelectedForExport: Bool = false" in detected_segment, "New segments must start excluded from export until reviewed or explicitly selected"
+assert "isSelectedForExport: Bool = false" in detected_segment, "DetectedSegment initializer must default export selection to false"
+review_start = view_model.index("func reviewSegment(id: UUID, as state: SegmentReviewState)")
+review_block = view_model[review_start:review_start + 1800]
+assert "case .confirmed:\n            segments[index].isSelectedForExport = true" in review_block, "Confirmed candidates must become export-selected"
+assert "case .rejected:\n            segments[index].isSelectedForExport = false" in review_block, "Rejected candidates must remain excluded from export"
+threshold_start = view_model.index("func applyFeedbackThreshold()")
+threshold_block = view_model[threshold_start:threshold_start + 1800]
+assert "case .unreviewed:\n                segments[index].isSelectedForExport = segments[index].bestDistance <= threshold" in threshold_block, "Threshold action must remain an explicit way to select unreviewed candidates"
+
+print("Repository regression verification: PASS")

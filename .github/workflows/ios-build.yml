@@ -5,14 +5,29 @@ on:
     branches:
       - video-target-finder
       - video-target-finder-candidate
-  workflow_dispatch:
 
 concurrency:
   group: video-target-finder-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  preflight:
+    if: >-
+      github.ref_name == 'video-target-finder' ||
+      contains(github.event.head_commit.message, '[full-ci]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Repository preflight
+        run: |
+          python3 -m py_compile scripts/verify_source.py
+          python3 scripts/verify_source.py
+          echo "Ubuntu repository preflight: PASS"
+
   build:
+    needs: preflight
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
@@ -44,6 +59,8 @@ jobs:
           /tmp/tracking-seed-tests
           swiftc VideoTargetFinder/TrackingSeedBoxDiagnostics.swift VideoTargetFinder/ObjectTrackingDiagnostics.swift scripts/test_object_tracking_diagnostics.swift -o /tmp/object-tracking-tests
           /tmp/object-tracking-tests
+          swiftc VideoTargetFinder/SearchSensitivity.swift VideoTargetFinder/FrameRegionSampler.swift scripts/test_frame_region_coverage.swift -o /tmp/frame-region-coverage-tests
+          /tmp/frame-region-coverage-tests
 
       - name: Video decode + recognition pipeline runtime smoke test
         run: |

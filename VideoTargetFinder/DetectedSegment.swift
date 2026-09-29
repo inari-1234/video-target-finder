@@ -57,7 +57,7 @@ struct DetectedSegment: Identifiable {
     var discoverySource: SegmentDiscoverySource
 
     var reviewState: SegmentReviewState = .unreviewed
-    var isSelectedForExport: Bool = true
+    var isSelectedForExport: Bool = false
 
     init(
         id: UUID = UUID(),
@@ -74,7 +74,7 @@ struct DetectedSegment: Identifiable {
         aggregationScores: ReferenceAggregationScores? = nil,
         discoverySource: SegmentDiscoverySource = .initial,
         reviewState: SegmentReviewState = .unreviewed,
-        isSelectedForExport: Bool = true
+        isSelectedForExport: Bool = false
     ) {
         self.id = id
         self.startTime = startTime

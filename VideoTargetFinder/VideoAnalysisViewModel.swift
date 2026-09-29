@@ -66,6 +66,17 @@ final class VideoAnalysisViewModel: ObservableObject {
     @Published private(set) var isRunningObjectTrackingDiagnostic = false
     @Published private(set) var objectTrackingDiagnosticProgress: Double = 0
 
+    var isDiagnosticWorkInProgress: Bool {
+        isPreparingMaskDiagnostics ||
+        isRunningForegroundReserveDiagnostic ||
+        isRunningTrackingSeedDiagnostic ||
+        isRunningObjectTrackingDiagnostic
+    }
+
+    var isExclusiveWorkInProgress: Bool {
+        isLoadingVideo || isScanning || isExporting || isDiagnosticWorkInProgress
+    }
+
     @Published var scanInterval: Double = 2.0 { didSet { persistSettings() } }
     @Published var detailInterval: Double = 0.25 { didSet { persistSettings() } }
     @Published var feedbackRescanInterval: Double = 1.0 { didSet { persistSettings() } }
@@ -150,7 +161,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     func loadVideo(from result: PHPickerResult) {
-        guard !isScanning, !isExporting, !isPreparingMaskDiagnostics, !isRunningForegroundReserveDiagnostic, !isRunningTrackingSeedDiagnostic, !isRunningObjectTrackingDiagnostic else { return }
+        guard !isExclusiveWorkInProgress else { return }
         guard let identifier = result.assetIdentifier else {
             errorMessage = "この動画の写真ライブラリ識別子を取得できませんでした。"
             return
@@ -190,7 +201,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     func setReferenceImages(_ images: [UIImage]) {
-        guard !isScanning, !isExporting, !isPreparingMaskDiagnostics, !isRunningForegroundReserveDiagnostic, !isRunningTrackingSeedDiagnostic else { return }
+        guard !isExclusiveWorkInProgress else { return }
         ScanCheckpointStore.clear()
         hasRecoverableScan = false
         checkpointReferencesWritten = false
@@ -203,7 +214,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     func removeReferenceImage(at index: Int) {
-        guard !isScanning, !isExporting, !isPreparingMaskDiagnostics, !isRunningForegroundReserveDiagnostic, referenceImages.indices.contains(index) else { return }
+        guard !isExclusiveWorkInProgress, referenceImages.indices.contains(index) else { return }
         // 見本構成が変わったため、旧見本を含む中断解析は復旧対象にできない。
         ScanCheckpointStore.clear()
         hasRecoverableScan = false
@@ -263,7 +274,7 @@ final class VideoAnalysisViewModel: ObservableObject {
 
     /// Stage 3: 粗探索 → 候補周辺の詳細探索 → 連続ヒットを区間化、まで自動で実行する。
     func startHighAccuracyScan() {
-        guard !isScanning, !isExporting, !isPreparingMaskDiagnostics, !isRunningForegroundReserveDiagnostic, !isRunningTrackingSeedDiagnostic else { return }
+        guard !isExclusiveWorkInProgress else { return }
         guard let asset = videoAsset,
               let metadata = videoMetadata else {
             errorMessage = "解析する動画を選択してください。"
@@ -459,6 +470,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     func reviewSegment(id: UUID, as state: SegmentReviewState) {
+        guard !isExclusiveWorkInProgress else { return }
         guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
         let changedDiscoverySource = segments[index].discoverySource
         segments[index].reviewState = state
@@ -486,11 +498,13 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     func toggleSegmentSelection(id: UUID) {
+        guard !isExclusiveWorkInProgress else { return }
         guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
         segments[index].isSelectedForExport.toggle()
     }
 
     func selectAllSegments() {
+        guard !isExclusiveWorkInProgress else { return }
         for index in segments.indices {
             if segments[index].reviewState != .rejected {
                 segments[index].isSelectedForExport = true
@@ -499,12 +513,14 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     func deselectAllSegments() {
+        guard !isExclusiveWorkInProgress else { return }
         for index in segments.indices {
             segments[index].isSelectedForExport = false
         }
     }
 
     func applyFeedbackThreshold() {
+        guard !isExclusiveWorkInProgress else { return }
         guard let threshold = feedbackThreshold else {
             statusMessage = "正解または誤検出を1件以上判定すると、推奨しきい値を計算できます。"
             return
@@ -527,13 +543,13 @@ final class VideoAnalysisViewModel: ObservableObject {
     // MARK: - Stage 6 feedback learning / re-scan
 
     var canRunFeedbackRescan: Bool {
-        !learnedReferences.isEmpty && videoAsset != nil && !isScanning && !isExporting
+        !learnedReferences.isEmpty && videoAsset != nil && !isExclusiveWorkInProgress
     }
 
     /// 正解判定された候補の「最も一致した局所領域」を追加見本にし、動画全体を再走査する。
     /// 既存の正解/誤検出判定は保持し、新しく見つかった非重複区間だけを候補へ追加する。
     func startFeedbackRescan() {
-        guard !isScanning, !isExporting, !isRunningObjectTrackingDiagnostic else { return }
+        guard !isExclusiveWorkInProgress else { return }
         guard let asset = videoAsset, let metadata = videoMetadata else {
             errorMessage = "再探索する動画を選択してください。"
             return
@@ -746,12 +762,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     var canRunForegroundReserveRerankDiagnostic: Bool {
-        !isScanning &&
-        !isExporting &&
-        !isPreparingMaskDiagnostics &&
-        !isRunningForegroundReserveDiagnostic &&
-        !isRunningTrackingSeedDiagnostic &&
-        !isRunningObjectTrackingDiagnostic &&
+        !isExclusiveWorkInProgress &&
         videoAsset != nil &&
         initialCoarseReserveAnalysisAvailable &&
         !initialCoarseReserve.isEmpty &&
@@ -887,7 +898,7 @@ final class VideoAnalysisViewModel: ObservableObject {
                     }
                 }
 
-                self.foregroundReserveRerankSummary = ForegroundReserveRerankAnalyzer.summarize(
+                let summary = ForegroundReserveRerankAnalyzer.summarize(
                     points: points,
                     detailBudget: budget,
                     detailRadius: radius,
@@ -896,6 +907,8 @@ final class VideoAnalysisViewModel: ObservableObject {
                     wasThermallyLimited: thermallyLimited,
                     frameEvaluationFailureCount: frameFailures
                 )
+                try Task.checkCancellation()
+                self.foregroundReserveRerankSummary = summary
                 self.foregroundReserveDiagnosticProgress = thermallyLimited ? Double(points.filter(\.wasProcessed).count) / Double(max(1, reserve.count)) : 1
                 self.statusMessage = thermallyLimited
                     ? "端末温度が高いため、前景mask再順位診断を途中で止めました。未処理候補は元distanceへfallbackしています。"
@@ -918,12 +931,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     var canRunTrackingSeedDiagnostic: Bool {
-        !isScanning &&
-        !isExporting &&
-        !isPreparingMaskDiagnostics &&
-        !isRunningForegroundReserveDiagnostic &&
-        !isRunningTrackingSeedDiagnostic &&
-        !isRunningObjectTrackingDiagnostic &&
+        !isExclusiveWorkInProgress &&
         videoAsset != nil &&
         initialScanSensitivity != nil &&
         segments.contains {
@@ -1087,13 +1095,15 @@ final class VideoAnalysisViewModel: ObservableObject {
                     await Task.yield()
                 }
 
-                self.trackingSeedQualitySummary = TrackingSeedBoxAnalyzer.summarize(
+                let summary = TrackingSeedBoxAnalyzer.summarize(
                     candidates: diagnostics,
                     elapsedSeconds: max(0, Date().timeIntervalSince(startedAt)),
                     wasThermallyLimited: thermallyLimited,
                     unsupportedMaskFormatCount: unsupportedFormats,
                     frameFailureCount: frameFailures
                 )
+                try Task.checkCancellation()
+                self.trackingSeedQualitySummary = summary
                 self.trackingSeedDiagnosticProgress = thermallyLimited
                     ? Double(diagnostics.count) / Double(max(1, targets.count))
                     : 1
@@ -1118,12 +1128,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     var canRunObjectTrackingDiagnostic: Bool {
-        !isScanning &&
-        !isExporting &&
-        !isPreparingMaskDiagnostics &&
-        !isRunningForegroundReserveDiagnostic &&
-        !isRunningTrackingSeedDiagnostic &&
-        !isRunningObjectTrackingDiagnostic &&
+        !isExclusiveWorkInProgress &&
         videoAsset != nil &&
         initialScanSensitivity != nil &&
         segments.contains {
@@ -1341,7 +1346,7 @@ final class VideoAnalysisViewModel: ObservableObject {
                     await Task.yield()
                 }
 
-                self.objectTrackingBenchmarkSummary = ObjectTrackingDiagnosticAnalyzer.benchmark(
+                let summary = ObjectTrackingDiagnosticAnalyzer.benchmark(
                     candidates: diagnostics,
                     elapsedSeconds: max(0, Date().timeIntervalSince(startedAt)),
                     wasThermallyLimited: thermallyLimited,
@@ -1349,6 +1354,8 @@ final class VideoAnalysisViewModel: ObservableObject {
                     referenceDetectionFailureCount: referenceFailures,
                     frameLoadFailureCount: frameFailures
                 )
+                try Task.checkCancellation()
+                self.objectTrackingBenchmarkSummary = summary
                 self.objectTrackingDiagnosticProgress = thermallyLimited
                     ? Double(diagnostics.count) / Double(max(1, targets.count))
                     : 1
@@ -1375,7 +1382,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     /// 判定済みの初回候補だけを、現在のFeature Print baselineとVision maskでpaired A/Bする。
     /// 通常探索には接続せず、認識レポートを開く/コピーする時に未計算分だけ実行する。
     func prepareMaskingDiagnosticsIfNeeded() async {
-        guard !isScanning, !isExporting, !isPreparingMaskDiagnostics, !isRunningForegroundReserveDiagnostic, !isRunningTrackingSeedDiagnostic else { return }
+        guard !isExclusiveWorkInProgress else { return }
 
         let pending = segments.filter {
             $0.discoverySource == .initial &&
@@ -1868,7 +1875,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     // MARK: - Stage 5 export
 
     func startExport() {
-        guard !isExporting, !isScanning, !isPreparingMaskDiagnostics, !isRunningForegroundReserveDiagnostic, !isRunningTrackingSeedDiagnostic, !isRunningObjectTrackingDiagnostic else { return }
+        guard !isExclusiveWorkInProgress else { return }
         guard let asset = videoAsset else {
             errorMessage = "書き出す元動画を開けません。"
             return
@@ -2359,10 +2366,12 @@ final class VideoAnalysisViewModel: ObservableObject {
 
     /// 前回アプリ終了時に粗探索途中のチェックポイントがあれば、同じフレーム位置から続行する。
     func restoreAndResumeInterruptedScan() {
-        guard !isScanning, !isExporting else { return }
+        guard !isExclusiveWorkInProgress else { return }
+        isLoadingVideo = true
 
         Task { [weak self] in
             guard let self else { return }
+            defer { self.isLoadingVideo = false }
             do {
                 let access = await self.preparePhotoLibraryAccess()
                 guard access else { return }
@@ -2536,7 +2545,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     func discardRecoverableScan() {
-        guard !isScanning else { return }
+        guard !isExclusiveWorkInProgress else { return }
         ScanCheckpointStore.clear()
         hasRecoverableScan = false
         statusMessage = "前回の解析チェックポイントを削除しました。"

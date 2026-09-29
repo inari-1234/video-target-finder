@@ -128,6 +128,96 @@ enum VideoPipelineRuntimeSmokeTests {
         return buffer
     }
 
+
+    static func makeTargetDiagnosticImage(
+        targetRect: CGRect,
+        occlusionRect: CGRect? = nil
+    ) -> CGImage {
+        guard let colorSpace = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(
+                data: nil,
+                width: width,
+                height: height,
+                bitsPerComponent: 8,
+                bytesPerRow: width * 4,
+                space: colorSpace,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+              ) else {
+            fatalError("Diagnostic CGContext creation failed")
+        }
+
+        context.setFillColor(red: 0.10, green: 0.12, blue: 0.16, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+
+        context.setFillColor(red: 0.92, green: 0.92, blue: 0.92, alpha: 1)
+        context.fill(targetRect)
+
+        let inset = targetRect.insetBy(
+            dx: targetRect.width * (8.0 / 96.0),
+            dy: targetRect.height * (8.0 / 120.0)
+        )
+        let columns = 5
+        let rows = 6
+        let cell = targetRect.width * (16.0 / 96.0)
+
+        for row in 0..<rows {
+            for column in 0..<columns {
+                let even = (row + column) % 2 == 0
+                context.setFillColor(
+                    red: even ? 0.08 : 0.82,
+                    green: even ? 0.14 : 0.26,
+                    blue: even ? 0.18 : 0.20,
+                    alpha: 1
+                )
+                context.fill(
+                    CGRect(
+                        x: inset.minX + CGFloat(column) * cell,
+                        y: inset.minY + CGFloat(row) * cell,
+                        width: cell,
+                        height: cell
+                    )
+                )
+            }
+        }
+
+        context.setStrokeColor(red: 1, green: 0.35, blue: 0.12, alpha: 1)
+        context.setLineWidth(max(2, min(targetRect.width, targetRect.height) * 0.04))
+        context.stroke(targetRect.insetBy(dx: 2, dy: 2))
+
+        if let occlusionRect {
+            context.setFillColor(red: 0.12, green: 0.13, blue: 0.15, alpha: 1)
+            context.fill(occlusionRect)
+        }
+
+        guard let image = context.makeImage() else {
+            fatalError("Diagnostic CGImage creation failed")
+        }
+        return image
+    }
+
+    static func printRobustnessDiagnostic(
+        name: String,
+        image: CGImage,
+        matcher: FeaturePrintMatcher
+    ) throws {
+        let raw = try matcher.diagnosticPositiveDistance(for: image)
+        let balanced = try matcher.bestMatch(in: image, mode: .balanced)
+        let thorough = try matcher.bestMatch(in: image, mode: .thorough)
+
+        precondition(raw.isFinite)
+        precondition(balanced.distance.isFinite)
+        precondition(thorough.distance.isFinite)
+
+        print(
+            "Robustness diagnostic [\(name)]: " +
+            "raw=\(String(format: "%.4f", raw)) | " +
+            "balanced=\(String(format: "%.4f", balanced.distance)) " +
+            "region=\(balanced.regionLabel) rejected=\(balanced.rejectedByNegative) | " +
+            "thorough=\(String(format: "%.4f", thorough.distance)) " +
+            "region=\(thorough.regionLabel) rejected=\(thorough.rejectedByNegative)"
+        )
+    }
+
     static func makeProductionGenerator(
         asset: AVAsset,
         interval: TimeInterval
@@ -284,6 +374,46 @@ enum VideoPipelineRuntimeSmokeTests {
             unseenDecoyMatch.distance,
             unseenDecoyMatch.negativeDistance ?? -1
         ))
+
+
+        let robustnessControl = makeTargetDiagnosticImage(
+            targetRect: CGRect(x: 64, y: 68, width: 96, height: 120)
+        )
+        let robustnessMatcher = try FeaturePrintMatcher(
+            referenceImages: [robustnessControl]
+        )
+        try printRobustnessDiagnostic(
+            name: "control-original-generated",
+            image: robustnessControl,
+            matcher: robustnessMatcher
+        )
+
+        let smallTarget = makeTargetDiagnosticImage(
+            targetRect: CGRect(x: 106, y: 101, width: 43, height: 54)
+        )
+        let occludedTarget = makeTargetDiagnosticImage(
+            targetRect: CGRect(x: 64, y: 68, width: 96, height: 120),
+            occlusionRect: CGRect(x: 64, y: 110, width: 96, height: 44)
+        )
+        let edgeTarget = makeTargetDiagnosticImage(
+            targetRect: CGRect(x: -20, y: 68, width: 96, height: 120)
+        )
+
+        try printRobustnessDiagnostic(
+            name: "small-45pct",
+            image: smallTarget,
+            matcher: robustnessMatcher
+        )
+        try printRobustnessDiagnostic(
+            name: "occluded-middle-37pct",
+            image: occludedTarget,
+            matcher: robustnessMatcher
+        )
+        try printRobustnessDiagnostic(
+            name: "left-edge-21pct-offscreen",
+            image: edgeTarget,
+            matcher: robustnessMatcher
+        )
 
         let seedRect = CGRect(
             x: 64.0 / Double(width),

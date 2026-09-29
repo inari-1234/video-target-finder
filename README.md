@@ -122,3 +122,10 @@ Bundle ID: `jp.inari1234.videotargetfinder`
 ## 次のプロダクト課題
 
 現状の「1本に結合」は選択区間を時系列で連結する機能です。ショート動画作成として完成させるには、目標尺（15/30/60/90秒）、1シーンの最大長、候補の自動優先順位、短い導入/終了、出力プレビューを追加する必要があります。
+
+## CI運用メモ
+
+- `video-target-finder`（canonical）へのpushはUbuntu preflightの後にmacOSフルCIを実行する。
+- `video-target-finder-candidate` へのpushはworkflow自体を記録するが、通常commitではjobをskipしてrunnerを割り当てない。
+- candidateの節目検証はcommit messageに `[full-ci]` を付けたpushだけUbuntu preflight→macOSフルCIを1回実行する。
+- hosted runnerが利用不可の間はcandidateをcanonicalへ昇格しない。
