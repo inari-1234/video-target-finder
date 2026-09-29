@@ -3,7 +3,7 @@ name: Video Target Finder Direct Source Build
 on:
   push:
     branches:
-      - video-target-finder
+      - main
       - video-target-finder-candidate
   workflow_dispatch:
 
