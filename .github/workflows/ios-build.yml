@@ -1,0 +1,114 @@
+name: Video Target Finder Direct Source Build
+
+on:
+  push:
+    branches:
+      - video-target-finder
+      - video-target-finder-candidate
+  workflow_dispatch:
+
+concurrency:
+  group: video-target-finder-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Static source verification
+        run: |
+          swiftc -frontend -parse VideoTargetFinder/*.swift
+          python3 scripts/verify_source.py
+          swiftc VideoTargetFinder/ScanPipelineCore.swift VideoTargetFinder/CandidateBudgetAnalyzer.swift scripts/test_candidate_budget.swift -o /tmp/candidate-budget-tests
+          /tmp/candidate-budget-tests
+          swiftc VideoTargetFinder/PersistentStorageLayout.swift scripts/test_persistent_storage_layout.swift -o /tmp/persistent-storage-tests
+          /tmp/persistent-storage-tests
+          swiftc VideoTargetFinder/ReferenceScoreAnalyzer.swift scripts/test_reference_score_analyzer.swift -o /tmp/reference-score-tests
+          /tmp/reference-score-tests
+          swiftc VideoTargetFinder/ScanPerformanceDiagnostics.swift scripts/test_scan_performance.swift -o /tmp/scan-performance-tests
+          /tmp/scan-performance-tests
+          swiftc VideoTargetFinder/MaskingDiagnostics.swift scripts/test_masking_diagnostics.swift -o /tmp/masking-diagnostics-tests
+          /tmp/masking-diagnostics-tests
+          swiftc VideoTargetFinder/ScanPipelineCore.swift VideoTargetFinder/CandidateBudgetAnalyzer.swift VideoTargetFinder/ForegroundReserveRerankDiagnostics.swift scripts/test_foreground_reserve_rerank.swift -o /tmp/foreground-rerank-tests
+          /tmp/foreground-rerank-tests
+          swiftc VideoTargetFinder/TrackingSeedBoxDiagnostics.swift scripts/test_tracking_seed_box.swift -o /tmp/tracking-seed-tests
+          /tmp/tracking-seed-tests
+          swiftc VideoTargetFinder/TrackingSeedBoxDiagnostics.swift VideoTargetFinder/ObjectTrackingDiagnostics.swift scripts/test_object_tracking_diagnostics.swift -o /tmp/object-tracking-tests
+          /tmp/object-tracking-tests
+
+      - name: Video decode + recognition pipeline runtime smoke test
+        run: |
+          swiftc VideoTargetFinder/ScanPipelineCore.swift VideoTargetFinder/SearchSensitivity.swift VideoTargetFinder/FrameRegionSampler.swift VideoTargetFinder/ReferenceScoreAnalyzer.swift VideoTargetFinder/FeaturePrintMatcher.swift VideoTargetFinder/VisionObjectTrackingEngine.swift scripts/test_video_pipeline_runtime.swift -o /tmp/video-pipeline-runtime-tests
+          /tmp/video-pipeline-runtime-tests
+
+          swiftc VideoTargetFinder/ScanPipelineCore.swift scripts/test_scan_pipeline_core.swift -o /tmp/scan-pipeline-core-tests
+          /tmp/scan-pipeline-core-tests
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build iOS Simulator
+        run: |
+          set -o pipefail
+          xcodebuild             -project VideoTargetFinder.xcodeproj             -scheme VideoTargetFinder             -configuration Debug             -sdk iphonesimulator             -destination 'generic/platform=iOS Simulator'             -derivedDataPath "$PWD/build-simulator"             CODE_SIGNING_ALLOWED=NO             build | tee xcodebuild-simulator.log
+
+      - name: Build unsigned iPhone app
+        run: |
+          set -o pipefail
+          xcodebuild             -project VideoTargetFinder.xcodeproj             -scheme VideoTargetFinder             -configuration Release             -sdk iphoneos             -destination 'generic/platform=iOS'             -derivedDataPath "$PWD/build-device"             CODE_SIGNING_ALLOWED=NO             CODE_SIGNING_REQUIRED=NO             CODE_SIGN_IDENTITY=''             build | tee xcodebuild-device.log
+
+      - name: Inspect compiler warnings
+        run: |
+          echo "Simulator warnings:"
+          grep -n 'warning:' xcodebuild-simulator.log || true
+          echo "Device warnings:"
+          grep -n 'warning:' xcodebuild-device.log || true
+
+      - name: Package sideload IPA
+        run: |
+          ./scripts/package_unsigned_ipa.sh             "$PWD/build-device/Build/Products/Release-iphoneos/VideoTargetFinder.app"             VideoTargetFinder-v0.28.0-build30-sideload.ipa
+
+      - name: Verify IPA
+        run: |
+          rm -rf verify-ipa
+          mkdir verify-ipa
+          cd verify-ipa
+          unzip -q ../VideoTargetFinder-v0.28.0-build30-sideload.ipa
+          APP=Payload/VideoTargetFinder.app
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")" = "jp.inari1234.videotargetfinder"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = "0.28.0"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "30"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :UIFileSharingEnabled' "$APP/Info.plist")" = "true"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "$APP/Info.plist")" = "true"
+          file "$APP/VideoTargetFinder" | grep -q arm64
+          echo "IPA verification: PASS"
+
+      - name: Upload sideload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoTargetFinder-v0.28.0-build30-sideload-ipa
+          path: VideoTargetFinder-v0.28.0-build30-sideload.ipa
+          retention-days: 14
+
+      - name: Upload Xcode logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: VideoTargetFinder-v0.28.0-build30-xcode-logs
+          path: |
+            xcodebuild-simulator.log
+            xcodebuild-device.log
+          if-no-files-found: ignore
+          retention-days: 14

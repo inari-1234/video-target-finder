@@ -1,0 +1,30 @@
+name: VideoTargetFinder
+options:
+  bundleIdPrefix: com.example
+settings:
+  base:
+    SWIFT_VERSION: 6.0
+    IPHONEOS_DEPLOYMENT_TARGET: 18.0
+targets:
+  VideoTargetFinder:
+    type: application
+    platform: iOS
+    sources:
+      - VideoTargetFinder
+    info:
+      path: VideoTargetFinder/Info.plist
+      properties:
+        CFBundleDisplayName: 推し動画メーカー
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        NSPhotoLibraryUsageDescription: 長い動画から推しが映る場面を端末内で探し、まとめ動画を作るために写真ライブラリへアクセスします。
+        NSPhotoLibraryAddUsageDescription: 作成した推し動画を共有シートから写真ライブラリへ保存するときに使用します。
+        UILaunchScreen: {}
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: jp.inari1234.videotargetfinder
+        TARGETED_DEVICE_FAMILY: 1
+        MARKETING_VERSION: 0.28.0
+        CURRENT_PROJECT_VERSION: 30
