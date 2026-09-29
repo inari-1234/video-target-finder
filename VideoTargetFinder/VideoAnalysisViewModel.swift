@@ -500,6 +500,11 @@ final class VideoAnalysisViewModel: ObservableObject {
     func toggleSegmentSelection(id: UUID) {
         guard !isExclusiveWorkInProgress else { return }
         guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
+        guard segments[index].reviewState != .rejected else {
+            segments[index].isSelectedForExport = false
+            statusMessage = "誤検出と判定した候補は切り出し対象にできません。正解に変更してから選択してください。"
+            return
+        }
         segments[index].isSelectedForExport.toggle()
     }
 
