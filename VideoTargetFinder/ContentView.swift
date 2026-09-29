@@ -506,12 +506,17 @@ struct ContentView: View {
                                 viewModel.toggleSegmentSelection(id: segment.id)
                             } label: {
                                 Label(
-                                    segment.isSelectedForExport ? "切り出し対象" : "対象外",
-                                    systemImage: segment.isSelectedForExport ? "checkmark.square.fill" : "square"
+                                    segment.reviewState == .rejected
+                                        ? "誤検出のため対象外"
+                                        : (segment.isSelectedForExport ? "切り出し対象" : "対象外"),
+                                    systemImage: segment.reviewState == .rejected
+                                        ? "xmark.square"
+                                        : (segment.isSelectedForExport ? "checkmark.square.fill" : "square")
                                 )
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             }
                             .buttonStyle(.plain)
+                            .disabled(segment.reviewState == .rejected)
 
                             if index < viewModel.segments.count - 1 {
                                 Divider()
