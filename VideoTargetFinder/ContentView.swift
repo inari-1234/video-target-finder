@@ -865,6 +865,17 @@ struct ContentView: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Text("選択 \(viewModel.selectedSegmentCount)候補 → 書き出し \(viewModel.mergedExportRangeCount)区間")
                             .font(.subheadline)
+                        Text("内訳: 正解 \(viewModel.selectedConfirmedCount) / 未判定 \(viewModel.selectedUnreviewedCount)")
+                            .font(.caption.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                        if viewModel.selectedUnreviewedCount > 0 {
+                            Label(
+                                "未判定の候補が \(viewModel.selectedUnreviewedCount)件含まれています。必要ならStep 4で○/×確認してください。",
+                                systemImage: "exclamationmark.triangle.fill"
+                            )
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        }
                         Text("書き出し時間: 約\(ScanCandidate.format(viewModel.selectedTotalDuration))")
                             .font(.subheadline.monospacedDigit())
                         Text("重複・指定秒数以内の近接区間は、保存前に自動で1区間へまとめます。")
