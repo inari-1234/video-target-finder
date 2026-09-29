@@ -435,4 +435,10 @@ assert 'statusMessage = "誤検出と判定した候補は切り出し対象に�
 assert '.disabled(segment.reviewState == .rejected)' in content, "Rejected candidate export toggle must be disabled in UI"
 assert '"誤検出のため対象外"' in content, "Rejected candidate export state must be explicit in UI"
 
+
+assert "var selectedConfirmedCount: Int" in view_model, "Export summary confirmed-count metric missing"
+assert "var selectedUnreviewedCount: Int" in view_model, "Export summary unreviewed-count metric missing"
+assert '"内訳: 正解 \\(viewModel.selectedConfirmedCount) / 未判定 \\(viewModel.selectedUnreviewedCount)"' in content, "Export review-state breakdown missing"
+assert '"未判定の候補が \\(viewModel.selectedUnreviewedCount)件含まれています。必要ならStep 4で○/×確認してください。"' in content, "Unreviewed export warning missing"
+
 print("Repository regression verification: PASS")
