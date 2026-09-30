@@ -603,6 +603,18 @@ struct ContentView: View {
                         Label("前回の再探索で \(viewModel.lastFeedbackRescanAddedCount)区間を追加", systemImage: "plus.circle.fill")
                             .font(.subheadline)
                     }
+
+                    if let performance = viewModel.latestFeedbackRescanPerformanceRun {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("前回の再探索時間: \(String(format: "%.1f秒", performance.totalElapsedSeconds))")
+                                .font(.caption.monospacedDigit())
+                            ForEach(Array(performance.phases.enumerated()), id: \.offset) { _, phase in
+                                Text("\(phase.phase.displayName): \(phase.elapsedText) / \(phase.sampleCount) samples / \(phase.rateText)")
+                                    .font(.caption2.monospacedDigit())
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
                 }
                 .padding(.top, 6)
             }
@@ -629,6 +641,10 @@ struct ContentView: View {
                             Text("レポート信頼度: \(report.reportConfidence)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+                            if let rescanPrecision = report.rescanReviewedPrecision {
+                                Text("学習再探索の判定済み正解率: \(rescanPrecision.formatted(.percent.precision(.fractionLength(0))))")
+                                    .font(.caption.bold())
+                            }
                         }
                         Spacer()
                     }
