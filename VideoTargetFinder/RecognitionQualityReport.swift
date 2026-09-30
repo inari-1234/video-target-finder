@@ -43,6 +43,8 @@ struct FeedbackRescanRunSummary: Identifiable, Sendable, Codable {
     let runNumber: Int
     let addedCount: Int
     let confirmedCount: Int
+    /// v0.29以降。旧保存レポートではnil。
+    let rejectedCount: Int?
     /// v0.20以降。旧保存レポートではnil。
     let coarseCandidateLimit: Int?
     let coarseCandidateCount: Int?
@@ -50,6 +52,17 @@ struct FeedbackRescanRunSummary: Identifiable, Sendable, Codable {
     let hardNegativeCount: Int?
 
     var id: Int { runNumber }
+
+    var reviewedPrecision: Double? {
+        guard let rejectedCount else { return nil }
+        let reviewed = confirmedCount + rejectedCount
+        guard reviewed > 0 else { return nil }
+        return Double(confirmedCount) / Double(reviewed)
+    }
+
+    var reviewedPrecisionText: String {
+        reviewedPrecision?.formatted(.percent.precision(.fractionLength(0))) ?? "判定不足"
+    }
 }
 
 struct RecognitionQualityReport: Sendable, Codable {
@@ -74,6 +87,8 @@ struct RecognitionQualityReport: Sendable, Codable {
     let reviewedPrecision: Double?
     let rescanAddedCount: Int
     let rescanConfirmedCount: Int
+    /// v0.29以降。旧保存レポートではnil。
+    let rescanRejectedCount: Int?
     let missedSuspicionCount: Int
     /// v0.19以降。nil は旧バージョンの保存レポートを復旧した場合。
     let rescanRuns: [FeedbackRescanRunSummary]?
@@ -82,6 +97,8 @@ struct RecognitionQualityReport: Sendable, Codable {
     let candidateBudgetAnalysis: CandidateBudgetAnalysisSummary?
     /// v0.21以降。現行nearestで候補化された判定済み区間だけを使う集約方式A/B診断。
     let referenceAggregationBenchmark: ReferenceAggregationBenchmarkSummary?
+    /// v0.29以降。学習再探索で追加された判定済み区間だけを使う集約方式A/B診断。
+    let feedbackRescanAggregationBenchmark: ReferenceAggregationBenchmarkSummary?
     /// v0.24以降。旧保存レポートではnil。
     let maskingBenchmark: MaskingBenchmarkSummary?
     /// v0.25以降。analysis reserve内の候補時刻を固定したforeground shadow再順位。
@@ -120,10 +137,24 @@ struct RecognitionQualityReport: Sendable, Codable {
         max(0, segmentCount - rescanAddedCount)
     }
 
+    var rescanReviewedPrecision: Double? {
+        guard let rescanRejectedCount else { return nil }
+        let reviewed = rescanConfirmedCount + rescanRejectedCount
+        guard reviewed > 0 else { return nil }
+        return Double(rescanConfirmedCount) / Double(reviewed)
+    }
+
+    var rescanReviewedPrecisionText: String {
+        rescanReviewedPrecision?.formatted(.percent.precision(.fractionLength(0))) ?? "判定不足"
+    }
+
     var rescanHistoryText: String {
         guard let rescanRuns, !rescanRuns.isEmpty else { return "履歴なし" }
         return rescanRuns.map { run in
             var details = "Rescan #\(run.runNumber): added \(run.addedCount), confirmed \(run.confirmedCount)"
+            if let rejected = run.rejectedCount {
+                details += ", rejected \(rejected), precision \(run.reviewedPrecisionText)"
+            }
             if let count = run.coarseCandidateCount, let limit = run.coarseCandidateLimit {
                 details += ", coarse \(count)/\(limit)"
             }
@@ -184,6 +215,8 @@ struct RecognitionQualityReport: Sendable, Codable {
             "Reviewed-candidate precision: \(reviewedPrecisionText)",
             "Feedback-rescan total added: \(rescanAddedCount)",
             "Feedback-rescan total confirmed: \(rescanConfirmedCount)",
+            "Feedback-rescan total rejected: \(rescanRejectedCount.map(String.init) ?? "legacy / unknown")",
+            "Feedback-rescan reviewed precision: \(rescanReviewedPrecisionText)",
             "Feedback-rescan history: \(rescanHistoryText)",
             "Missed-detection suspicions: \(missedSuspicionCount)",
             "Positive distance: \(positiveDistances.compactText)",
@@ -320,6 +353,18 @@ struct RecognitionQualityReport: Sendable, Codable {
             lines.append("Timing includes manual/thermal pauses and other wall-clock waiting inside each phase.")
         } else {
             lines.append("(not available; legacy report or scan performance was not recorded)")
+        }
+
+        lines.append("")
+        lines.append("=== Feedback Rescan Aggregation Diagnostic ===")
+        if let benchmark = feedbackRescanAggregationBenchmark {
+            lines.append("Reviewed feedback-rescan candidates: \(benchmark.sampleCount) (confirmed \(benchmark.confirmedCount), rejected \(benchmark.rejectedCount))")
+            lines.append("Nearest one reference: \(benchmark.nearest.compactText)")
+            lines.append("Top-2 reference mean: \(benchmark.top2Mean.compactText)")
+            lines.append("Median across references: \(benchmark.median.compactText)")
+            lines.append("Scope: feedback-rescan segments only. These candidates were scored with original + learned positive references and available hard negatives. This is diagnostic-only and does not change production acceptance.")
+        } else {
+            lines.append("(not available; review both correct and false-positive feedback-rescan candidates)")
         }
 
         lines.append("")
