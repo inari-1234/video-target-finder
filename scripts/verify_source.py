@@ -123,7 +123,7 @@ assert "aggregationScores: ReferenceAggregationScores" in matcher, "Matcher diag
 assert "aggregationScores: match.aggregationScores" in view_model, "Detailed-hit aggregation diagnostics missing"
 assert "aggregationScores: diagnosticScores" in view_model, "Segment aggregation diagnostics missing"
 assert "referenceAggregationBenchmark: aggregationBenchmark" in view_model, "Recognition report aggregation benchmark missing"
-assert "evaluationSchemaVersion: 9" in view_model, "Evaluation schema 9 required"
+assert "evaluationSchemaVersion: 10" in view_model, "Evaluation schema 10 required"
 assert "見本集約方式のA/B診断" in report_view, "Aggregation benchmark UI section missing"
 assert "match.distance <= threshold" in view_model, "Production detailed acceptance must still use current nearest Feature Print distance"
 assert "distance: positiveDistance" in matcher, "Production RegionMatch distance must remain nearest positive distance"
@@ -440,5 +440,26 @@ assert "var selectedConfirmedCount: Int" in view_model, "Export summary confirme
 assert "var selectedUnreviewedCount: Int" in view_model, "Export summary unreviewed-count metric missing"
 assert '"内訳: 正解 \\(viewModel.selectedConfirmedCount) / 未判定 \\(viewModel.selectedUnreviewedCount)"' in content, "Export review-state breakdown missing"
 assert '"未判定の候補が \\(viewModel.selectedUnreviewedCount)件含まれています。必要ならStep 4で○/×確認してください。"' in content, "Unreviewed export warning missing"
+
+
+# v0.29: feedback-rescan precision/performance and reference-aggregation diagnostics.
+assert "let rejectedCount: Int?" in report, "Per-rescan rejected-count field missing"
+assert "var reviewedPrecision: Double?" in report, "Per-rescan precision calculation missing"
+assert "let rescanRejectedCount: Int?" in report, "Feedback-rescan rejected total missing"
+assert "var rescanReviewedPrecision: Double?" in report, "Feedback-rescan precision summary missing"
+assert "let feedbackRescanAggregationBenchmark: ReferenceAggregationBenchmarkSummary?" in report, "Feedback-rescan aggregation benchmark field missing"
+assert "private func makeFeedbackRescanAggregationBenchmark()" in view_model, "Feedback-rescan aggregation benchmark builder missing"
+feedback_benchmark_start = view_model.index("private func makeFeedbackRescanAggregationBenchmark()")
+feedback_benchmark_end = view_model.index("private func makeCandidateBudgetAnalysis", feedback_benchmark_start)
+feedback_benchmark_block = view_model[feedback_benchmark_start:feedback_benchmark_end]
+assert "segment.discoverySource == .feedbackRescan" in feedback_benchmark_block, "Feedback aggregation A/B must use feedback-rescan segments only"
+assert "ReferenceScoreAnalyzer.benchmark(samples: samples)" in feedback_benchmark_block, "Feedback aggregation A/B must use shared benchmark analyzer"
+assert "feedbackRescanAggregationBenchmark: feedbackAggregationBenchmark" in view_model, "Feedback aggregation benchmark report integration missing"
+assert "var latestFeedbackRescanPerformanceRun: ScanPerformanceRunSummary?" in view_model, "Latest feedback performance accessor missing"
+assert 'Text("前回の再探索時間:' in content, "Feedback-rescan elapsed-time UI missing"
+assert 'Text("学習再探索の判定済み正解率:' in content, "Feedback-rescan precision UI missing"
+assert 'Section("学習再探索・見本集約A/B")' in report_view, "Feedback-rescan aggregation report UI missing"
+assert "本番の候補採否はまだ変更しません" in report_view, "Feedback aggregation diagnostic-only disclosure missing"
+assert "match.distance <= threshold" in view_model, "Feedback diagnostics must not replace production nearest-distance acceptance"
 
 print("Repository regression verification: PASS")
