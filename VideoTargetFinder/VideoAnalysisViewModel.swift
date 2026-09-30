@@ -559,6 +559,10 @@ final class VideoAnalysisViewModel: ObservableObject {
         !learnedReferences.isEmpty && videoAsset != nil && !isExclusiveWorkInProgress
     }
 
+    var latestFeedbackRescanPerformanceRun: ScanPerformanceRunSummary? {
+        scanPerformanceRuns.last { $0.kind == .feedbackRescan }
+    }
+
     /// 正解判定された候補の「最も一致した局所領域」を追加見本にし、動画全体を再走査する。
     /// 既存の正解/誤検出判定は保持し、新しく見つかった非重複区間だけを候補へ追加する。
     func startFeedbackRescan() {
@@ -1492,10 +1496,14 @@ final class VideoAnalysisViewModel: ObservableObject {
             let confirmed = segments.filter {
                 ids.contains($0.id) && $0.reviewState == .confirmed
             }.count
+            let rejected = segments.filter {
+                ids.contains($0.id) && $0.reviewState == .rejected
+            }.count
             return FeedbackRescanRunSummary(
                 runNumber: run.runNumber,
                 addedCount: run.addedSegmentIDs.count,
                 confirmedCount: confirmed,
+                rejectedCount: rejected,
                 coarseCandidateLimit: run.coarseCandidateLimit,
                 coarseCandidateCount: run.coarseCandidateCount,
                 positiveReferenceCount: run.positiveReferenceCount,
@@ -1508,8 +1516,12 @@ final class VideoAnalysisViewModel: ObservableObject {
         let rescanConfirmed = runSummaries.isEmpty
             ? rescanSegments.filter { $0.reviewState == .confirmed }.count
             : runSummaries.reduce(0) { $0 + $1.confirmedCount }
+        let rescanRejected = runSummaries.isEmpty
+            ? rescanSegments.filter { $0.reviewState == .rejected }.count
+            : runSummaries.reduce(0) { $0 + ($1.rejectedCount ?? 0) }
         let candidateBudgetAnalysis = makeCandidateBudgetAnalysis()
         let aggregationBenchmark = makeReferenceAggregationBenchmark()
+        let feedbackAggregationBenchmark = makeFeedbackRescanAggregationBenchmark()
         let maskingBenchmark = makeMaskingBenchmark()
         let averageTracking = segments.isEmpty ? nil : segments.map(\.trackingScore).reduce(0, +) / Double(segments.count)
 
@@ -1666,7 +1678,7 @@ final class VideoAnalysisViewModel: ObservableObject {
 
         return RecognitionQualityReport(
             generatedAt: Date(),
-            evaluationSchemaVersion: 9,
+            evaluationSchemaVersion: 10,
             recognitionEngine: "Apple Vision Feature Print",
             targetLabel: targetLabel.trimmingCharacters(in: .whitespacesAndNewlines),
             videoDurationText: videoMetadata?.durationText ?? "未選択",
@@ -1684,10 +1696,12 @@ final class VideoAnalysisViewModel: ObservableObject {
             reviewedPrecision: reviewedPrecision,
             rescanAddedCount: rescanAddedTotal,
             rescanConfirmedCount: rescanConfirmed,
+            rescanRejectedCount: rescanRejected,
             missedSuspicionCount: rescanConfirmed,
             rescanRuns: runSummaries,
             candidateBudgetAnalysis: candidateBudgetAnalysis,
             referenceAggregationBenchmark: aggregationBenchmark,
+            feedbackRescanAggregationBenchmark: feedbackAggregationBenchmark,
             maskingBenchmark: maskingBenchmark,
             foregroundReserveRerank: foregroundReserveRerankSummary,
             trackingSeedQuality: trackingSeedQualitySummary,
@@ -1742,6 +1756,22 @@ final class VideoAnalysisViewModel: ObservableObject {
             // 学習再探索は元見本＋学習見本＋hard negativeという別条件なので混在させない。
             // 同一の初回見本集合で採点された区間だけをA/B比較する。
             guard segment.discoverySource == .initial,
+                  let scores = segment.aggregationScores else { return nil }
+            switch segment.reviewState {
+            case .confirmed:
+                return ReferenceAggregationLabeledSample(isConfirmed: true, scores: scores)
+            case .rejected:
+                return ReferenceAggregationLabeledSample(isConfirmed: false, scores: scores)
+            case .unreviewed:
+                return nil
+            }
+        }
+        return ReferenceScoreAnalyzer.benchmark(samples: samples)
+    }
+
+    private func makeFeedbackRescanAggregationBenchmark() -> ReferenceAggregationBenchmarkSummary? {
+        let samples: [ReferenceAggregationLabeledSample] = segments.compactMap { segment in
+            guard segment.discoverySource == .feedbackRescan,
                   let scores = segment.aggregationScores else { return nil }
             switch segment.reviewState {
             case .confirmed:
