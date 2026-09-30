@@ -303,6 +303,42 @@ struct RecognitionReportView: View {
                     }
                 }
 
+                if let benchmark = report.feedbackRescanAggregationBenchmark {
+                    Section("学習再探索・見本集約A/B") {
+                        LabeledContent("判定済み再探索候補", value: "\(benchmark.sampleCount)")
+                        if let precision = report.rescanReviewedPrecision {
+                            LabeledContent(
+                                "再探索の正解率",
+                                value: precision.formatted(.percent.precision(.fractionLength(0)))
+                            )
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("最近傍1枚")
+                                .font(.subheadline.bold())
+                            Text(benchmark.nearest.compactText)
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("上位2見本の平均")
+                                .font(.subheadline.bold())
+                            Text(benchmark.top2Mean.compactText)
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text("見本間の中央値")
+                                .font(.subheadline.bold())
+                            Text(benchmark.median.compactText)
+                                .font(.caption.monospacedDigit())
+                                .foregroundStyle(.secondary)
+                        }
+                        Text("学習再探索で追加され、○/×判定済みの候補だけを比較します。元見本＋学習見本＋hard negativeという再探索時の条件での診断です。本番の候補採否はまだ変更しません。")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+
                 if let benchmark = report.referenceAggregationBenchmark {
                     Section("見本集約方式のA/B診断") {
                         LabeledContent("判定済みサンプル", value: "\(benchmark.sampleCount)")
