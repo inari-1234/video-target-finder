@@ -16,8 +16,8 @@ for p in Path(".").rglob("*"):
     assert not ("stage" in name and ("patch" in name or name.endswith(".zip"))), f"Legacy stage artifact committed: {p}"
 
 project = Path("project.yml").read_text(encoding="utf-8")
-assert re.search(r"MARKETING_VERSION:\s*0\.29\.0", project), "Version 0.29.0 missing"
-assert re.search(r"CURRENT_PROJECT_VERSION:\s*31", project), "Build 31 missing"
+assert re.search(r"MARKETING_VERSION:\s*0\.30\.0", project), "Version 0.30.0 missing"
+assert re.search(r"CURRENT_PROJECT_VERSION:\s*32", project), "Build 32 missing"
 assert "jp.inari1234.videotargetfinder" in project, "Bundle ID mismatch"
 assert "UIFileSharingEnabled: true" in project, "File Sharing must stay enabled"
 assert "LSSupportsOpeningDocumentsInPlace: true" in project, "Open-in-place must stay enabled"
