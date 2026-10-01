@@ -24,7 +24,8 @@ struct RegionMatch: Sendable {
     /// 誤検出として学習した見本の方が明確に近い場合は true。
     let rejectedByNegative: Bool
     let negativeDistance: Float?
-    /// 見本画像単位でvariantを集約したA/B診断値。本番判定には使わない。
+    /// 見本画像単位でvariantを集約した値。
+    /// nearestは診断比較にも使い、学習再探索のtop2Meanモードでは本番の候補順位・しきい値計算にも使う。
     let aggregationScores: ReferenceAggregationScores
 }
 
