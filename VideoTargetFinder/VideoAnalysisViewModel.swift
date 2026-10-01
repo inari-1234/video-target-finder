@@ -407,27 +407,31 @@ final class VideoAnalysisViewModel: ObservableObject {
                 let detailThreshold = ScanPipelineCore.detailThreshold(coarseThreshold: coarse.threshold)
                 let detailPlannedSamples = self.detailSampleCount(windows: windows, interval: fineInterval)
                 let detailPerformanceStart = self.beginPerformancePhase()
-                let hits = try await self.runDetailedScan(
+                let detail = try await self.runDetailedScan(
                     generator: detailGenerator,
                     matcher: matcher,
                     windows: windows,
                     interval: fineInterval,
                     sensitivity: selectedSensitivity,
-                    threshold: detailThreshold
+                    threshold: detailThreshold,
+                    captureFeatureCache: true
                 )
                 performancePhases.append(
                     self.finishPerformancePhase(
                         phase: .detail,
                         startedAt: detailPerformanceStart,
                         sampleCount: detailPlannedSamples,
-                        outputCount: hits.count
+                        outputCount: detail.hits.count
                     )
                 )
                 self.recordPerformanceRun(kind: .initial, runNumber: nil, phases: performancePhases)
+                DiagnosticLogger.log(
+                    "Initial detail Feature cache: stored=\(self.initialDetailFeatureCache.count)/\(detailPlannedSamples), cap=\(Self.maxInitialDetailFeatureCacheEntries)"
+                )
 
                 try Task.checkCancellation()
                 self.segments = self.buildSegments(
-                    from: hits,
+                    from: detail.hits,
                     duration: metadata.duration,
                     detailInterval: fineInterval
                 )
@@ -729,21 +733,25 @@ final class VideoAnalysisViewModel: ObservableObject {
                 let detailThreshold = coarse.threshold + max(0.025, coarse.threshold * 0.12)
                 let detailPlannedSamples = self.detailSampleCount(windows: windows, interval: fineInterval)
                 let detailPerformanceStart = self.beginPerformancePhase()
-                let hits = try await self.runDetailedScan(
+                let detail = try await self.runDetailedScan(
                     generator: detailGenerator,
                     matcher: matcher,
                     windows: windows,
                     interval: fineInterval,
                     sensitivity: selectedSensitivity,
-                    threshold: detailThreshold
+                    threshold: detailThreshold,
+                    reuseFeatureCache: true
                 )
                 performancePhases.append(
                     self.finishPerformancePhase(
                         phase: .detail,
                         startedAt: detailPerformanceStart,
                         sampleCount: detailPlannedSamples,
-                        outputCount: hits.count
+                        outputCount: detail.hits.count
                     )
+                )
+                DiagnosticLogger.log(
+                    "Feedback detail Feature cache: hits=\(detail.featureCacheHits), fresh=\(detail.freshFeatureSamples), cachedInitial=\(self.initialDetailFeatureCache.count)"
                 )
                 self.recordPerformanceRun(
                     kind: .feedbackRescan,
@@ -753,7 +761,7 @@ final class VideoAnalysisViewModel: ObservableObject {
 
                 try Task.checkCancellation()
                 let rescannedSegments = self.buildSegments(
-                    from: hits,
+                    from: detail.hits,
                     duration: metadata.duration,
                     detailInterval: fineInterval
                 )
@@ -776,7 +784,9 @@ final class VideoAnalysisViewModel: ObservableObject {
                         hardNegativeCount: negativeReferences.count,
                         positiveAggregationMode: "top2Mean",
                         coarseFeatureCacheHits: coarse.featureCacheHits,
-                        coarseFeatureFreshSamples: coarse.freshFeatureSamples
+                        coarseFeatureFreshSamples: coarse.freshFeatureSamples,
+                        detailFeatureCacheHits: detail.featureCacheHits,
+                        detailFeatureFreshSamples: detail.freshFeatureSamples
                     )
                 )
                 self.segments = merged
@@ -2708,7 +2718,7 @@ final class VideoAnalysisViewModel: ObservableObject {
                         let detailThreshold = ScanPipelineCore.detailThreshold(coarseThreshold: coarse.threshold)
                         let detailPlannedSamples = self.detailSampleCount(windows: windows, interval: fineInterval)
                         let detailPerformanceStart = self.beginPerformancePhase()
-                        let hits = try await self.runDetailedScan(
+                        let detail = try await self.runDetailedScan(
                             generator: detailGenerator,
                             matcher: matcher,
                             windows: windows,
@@ -2721,13 +2731,13 @@ final class VideoAnalysisViewModel: ObservableObject {
                                 phase: .detail,
                                 startedAt: detailPerformanceStart,
                                 sampleCount: detailPlannedSamples,
-                                outputCount: hits.count
+                                outputCount: detail.hits.count
                             )
                         )
                         self.recordPerformanceRun(kind: .recovery, runNumber: nil, phases: performancePhases)
 
                         self.segments = self.buildSegments(
-                            from: hits,
+                            from: detail.hits,
                             duration: metadata.duration,
                             detailInterval: fineInterval
                         )
