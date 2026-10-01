@@ -123,15 +123,17 @@ assert "aggregationScores: ReferenceAggregationScores" in matcher, "Matcher diag
 assert "aggregationScores: match.aggregationScores" in view_model, "Detailed-hit aggregation diagnostics missing"
 assert "aggregationScores: diagnosticScores" in view_model, "Segment aggregation diagnostics missing"
 assert "referenceAggregationBenchmark: aggregationBenchmark" in view_model, "Recognition report aggregation benchmark missing"
-assert "evaluationSchemaVersion: 10" in view_model, "Evaluation schema 10 required"
+assert "evaluationSchemaVersion: 11" in view_model, "Evaluation schema 11 required"
 assert "見本集約方式のA/B診断" in report_view, "Aggregation benchmark UI section missing"
-assert "match.distance <= threshold" in view_model, "Production detailed acceptance must still use current nearest Feature Print distance"
-assert "distance: positiveDistance" in matcher, "Production RegionMatch distance must remain nearest positive distance"
+assert "match.distance <= threshold" in view_model, "Production detailed acceptance must use matcher production distance"
+assert "positiveAggregationMode: PositiveAggregationMode = .nearest" in matcher, "Default matcher mode must remain nearest"
+assert "distance: productionDistance" in matcher, "RegionMatch must expose the selected production aggregation distance"
+assert "negativeDistance.map { $0 + separation < positiveDistance }" in matcher, "Hard-negative exclusion must remain nearest-positive based during top2 A/B"
 
 
 # v0.21 benchmark fairness: do not mix feedback-rescan distances scored with learned references/hard negatives.
 benchmark_start = view_model.index("private func makeReferenceAggregationBenchmark")
-benchmark_end = view_model.index("private func makeCandidateBudgetAnalysis", benchmark_start)
+benchmark_end = view_model.index("private func makeFeedbackRescanAggregationBenchmark", benchmark_start)
 benchmark_block = view_model[benchmark_start:benchmark_end]
 assert "segment.discoverySource == .initial" in benchmark_block, "Aggregation A/B must compare only initial-scan segments scored with the same reference set"
 
@@ -459,7 +461,19 @@ assert "var latestFeedbackRescanPerformanceRun: ScanPerformanceRunSummary?" in v
 assert 'Text("前回の再探索時間:' in content, "Feedback-rescan elapsed-time UI missing"
 assert 'Text("学習再探索の判定済み正解率:' in content, "Feedback-rescan precision UI missing"
 assert 'Section("学習再探索・見本集約A/B")' in report_view, "Feedback-rescan aggregation report UI missing"
-assert "本番の候補採否はまだ変更しません" in report_view, "Feedback aggregation diagnostic-only disclosure missing"
-assert "match.distance <= threshold" in view_model, "Feedback diagnostics must not replace production nearest-distance acceptance"
+assert "最新の本番再探索は正例集約" in report_view, "Feedback production aggregation disclosure missing"
+assert "hard negative除外だけは従来nearest正例distance基準を維持しています" in report_view, "Hard-negative isolation disclosure missing"
+assert "let positiveAggregationMode: String?" in report, "Per-rescan production aggregation provenance missing"
+rescan_start = view_model.index("func startFeedbackRescan()")
+rescan_end = view_model.index("func referenceLabel", rescan_start)
+rescan_block = view_model[rescan_start:rescan_end]
+assert "positiveAggregationMode: .top2Mean" in rescan_block, "Feedback rescan must use top2Mean production aggregation"
+initial_scan_start = view_model.index("func startHighAccuracyScan()")
+initial_scan_end = view_model.index("func cancelScan()", initial_scan_start)
+initial_scan_block = view_model[initial_scan_start:initial_scan_end]
+assert "positiveAggregationMode: .top2Mean" not in initial_scan_block, "Initial scan must remain on default nearest aggregation"
+assert "positiveAggregationMode: \"top2Mean\"" in rescan_block, "Feedback run provenance must record top2Mean"
+assert "Positive aggregation mode regression: PASS" in runtime_test, "Runtime top2 aggregation regression marker missing"
+assert "abs(top2PositiveMatch.distance - top2PositiveMatch.aggregationScores.top2Mean)" in runtime_test, "Runtime top2 distance equality check missing"
 
 print("Repository regression verification: PASS")
