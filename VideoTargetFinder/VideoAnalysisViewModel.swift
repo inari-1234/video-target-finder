@@ -1545,7 +1545,9 @@ final class VideoAnalysisViewModel: ObservableObject {
                 coarseCandidateCount: run.coarseCandidateCount,
                 positiveReferenceCount: run.positiveReferenceCount,
                 hardNegativeCount: run.hardNegativeCount,
-                positiveAggregationMode: run.positiveAggregationMode
+                positiveAggregationMode: run.positiveAggregationMode,
+                coarseFeatureCacheHits: run.coarseFeatureCacheHits,
+                coarseFeatureFreshSamples: run.coarseFeatureFreshSamples
             )
         }
         let rescanAddedTotal = runSummaries.isEmpty
@@ -1716,7 +1718,7 @@ final class VideoAnalysisViewModel: ObservableObject {
 
         return RecognitionQualityReport(
             generatedAt: Date(),
-            evaluationSchemaVersion: 11,
+            evaluationSchemaVersion: 12,
             recognitionEngine: "Apple Vision Feature Print",
             targetLabel: targetLabel.trimmingCharacters(in: .whitespacesAndNewlines),
             videoDurationText: videoMetadata?.durationText ?? "未選択",
