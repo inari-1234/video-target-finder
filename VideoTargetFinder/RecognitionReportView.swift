@@ -40,6 +40,12 @@ struct RecognitionReportView: View {
                                         .font(.caption.monospacedDigit())
                                         .foregroundStyle(.secondary)
                                 }
+                                if let hits = run.detailFeatureCacheHits,
+                                   let fresh = run.detailFeatureFreshSamples {
+                                    Text("詳細探索Feature: 再利用 \(hits) / 新規 \(fresh)")
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                }
                             }
                         }
                     }
