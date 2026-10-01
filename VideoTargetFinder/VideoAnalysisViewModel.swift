@@ -346,7 +346,8 @@ final class VideoAnalysisViewModel: ObservableObject {
                     initialCandidates: [],
                     initialScores: [],
                     enablePersistentCheckpoint: true,
-                    analysisReserveLimit: analysisReserveLimit
+                    analysisReserveLimit: analysisReserveLimit,
+                    captureFeatureCache: true
                 )
                 performancePhases.append(
                     self.finishPerformancePhase(
@@ -357,6 +358,9 @@ final class VideoAnalysisViewModel: ObservableObject {
                     )
                 )
                 self.recordPerformanceRun(kind: .initial, runNumber: nil, phases: performancePhases)
+                DiagnosticLogger.log(
+                    "Initial coarse Feature cache: stored=\(self.initialCoarseFeatureCache.count)/\(coarsePlannedSamples), cap=\(Self.maxInitialCoarseFeatureCacheEntries)"
+                )
 
                 try Task.checkCancellation()
                 self.initialCoarseReserve = coarse.analysisReserve
@@ -390,7 +394,7 @@ final class VideoAnalysisViewModel: ObservableObject {
 
                 let detailGenerator = Self.makeImageGenerator(asset: asset, interval: fineInterval)
                 let windows = self.makeDetailWindows(
-                    from: coarse.candidates,
+                    from: hydratedCoarseCandidates,
                     duration: metadata.duration,
                     radius: selectedSensitivity.detailRadius
                 )
@@ -652,15 +656,26 @@ final class VideoAnalysisViewModel: ObservableObject {
                     initialCandidates: [],
                     initialScores: [],
                     enablePersistentCheckpoint: false,
-                    candidateLimit: expandedCandidateLimit
+                    candidateLimit: expandedCandidateLimit,
+                    reuseFeatureCache: true
                 )
+                let hydratedCoarseCandidates = coarse.featureCacheHits > 0
+                    ? await self.hydrateCandidateThumbnails(
+                        coarse.candidates,
+                        asset: asset,
+                        interval: coarseInterval
+                    )
+                    : coarse.candidates
                 performancePhases.append(
                     self.finishPerformancePhase(
                         phase: .coarse,
                         startedAt: coarsePerformanceStart,
                         sampleCount: coarsePlannedSamples,
-                        outputCount: coarse.candidates.count
+                        outputCount: hydratedCoarseCandidates.count
                     )
+                )
+                DiagnosticLogger.log(
+                    "Feedback coarse Feature cache: hits=\(coarse.featureCacheHits), fresh=\(coarse.freshFeatureSamples), cachedInitial=\(self.initialCoarseFeatureCache.count)"
                 )
                 self.recordPerformanceRun(
                     kind: .feedbackRescan,
@@ -669,10 +684,10 @@ final class VideoAnalysisViewModel: ObservableObject {
                 )
 
                 try Task.checkCancellation()
-                self.candidates = coarse.candidates
+                self.candidates = hydratedCoarseCandidates
                 self.adaptiveThreshold = coarse.threshold
 
-                guard !coarse.candidates.isEmpty else {
+                guard !hydratedCoarseCandidates.isEmpty else {
                     self.lastFeedbackRescanAddedCount = 0
                     self.feedbackRescanRuns.append(
                         FeedbackRescanRuntimeRun(
@@ -682,7 +697,9 @@ final class VideoAnalysisViewModel: ObservableObject {
                             coarseCandidateCount: 0,
                             positiveReferenceCount: combinedReferences.count,
                             hardNegativeCount: negativeReferences.count,
-                            positiveAggregationMode: "top2Mean"
+                            positiveAggregationMode: "top2Mean",
+                            coarseFeatureCacheHits: coarse.featureCacheHits,
+                            coarseFeatureFreshSamples: coarse.freshFeatureSamples
                         )
                     )
                     self.scanProgress = 1
@@ -749,10 +766,12 @@ final class VideoAnalysisViewModel: ObservableObject {
                         runNumber: rescanRunNumber,
                         addedSegmentIDs: addedIDs,
                         coarseCandidateLimit: expandedCandidateLimit,
-                        coarseCandidateCount: coarse.candidates.count,
+                        coarseCandidateCount: hydratedCoarseCandidates.count,
                         positiveReferenceCount: combinedReferences.count,
                         hardNegativeCount: negativeReferences.count,
-                        positiveAggregationMode: "top2Mean"
+                        positiveAggregationMode: "top2Mean",
+                        coarseFeatureCacheHits: coarse.featureCacheHits,
+                        coarseFeatureFreshSamples: coarse.freshFeatureSamples
                     )
                 )
                 self.segments = merged
