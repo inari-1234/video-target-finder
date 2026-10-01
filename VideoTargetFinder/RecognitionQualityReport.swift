@@ -50,6 +50,8 @@ struct FeedbackRescanRunSummary: Identifiable, Sendable, Codable {
     let coarseCandidateCount: Int?
     let positiveReferenceCount: Int?
     let hardNegativeCount: Int?
+    /// v0.30以降。旧保存レポートではnil（旧方式はnearest）。
+    let positiveAggregationMode: String?
 
     var id: Int { runNumber }
 
@@ -160,6 +162,9 @@ struct RecognitionQualityReport: Sendable, Codable {
             }
             if let positives = run.positiveReferenceCount, let negatives = run.hardNegativeCount {
                 details += ", refs +\(positives)/-\(negatives)"
+            }
+            if let mode = run.positiveAggregationMode {
+                details += ", positive aggregation \(mode)"
             }
             return details
         }.joined(separator: " / ")
@@ -362,7 +367,8 @@ struct RecognitionQualityReport: Sendable, Codable {
             lines.append("Nearest one reference: \(benchmark.nearest.compactText)")
             lines.append("Top-2 reference mean: \(benchmark.top2Mean.compactText)")
             lines.append("Median across references: \(benchmark.median.compactText)")
-            lines.append("Scope: feedback-rescan segments only. These candidates were scored with original + learned positive references and available hard negatives. This is diagnostic-only and does not change production acceptance.")
+            let productionMode = rescanRuns?.last?.positiveAggregationMode ?? "nearest (legacy)"
+            lines.append("Scope: feedback-rescan segments only. Positive aggregation used by the latest production rescan: \(productionMode). Nearest/top-2/median are shown side by side for evaluation. Hard-negative exclusion remains nearest-positive based.")
         } else {
             lines.append("(not available; review both correct and false-positive feedback-rescan candidates)")
         }
