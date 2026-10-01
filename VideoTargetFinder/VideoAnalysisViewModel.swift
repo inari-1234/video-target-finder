@@ -394,7 +394,7 @@ final class VideoAnalysisViewModel: ObservableObject {
 
                 let detailGenerator = Self.makeImageGenerator(asset: asset, interval: fineInterval)
                 let windows = self.makeDetailWindows(
-                    from: hydratedCoarseCandidates,
+                    from: coarse.candidates,
                     duration: metadata.duration,
                     radius: selectedSensitivity.detailRadius
                 )
@@ -716,7 +716,7 @@ final class VideoAnalysisViewModel: ObservableObject {
 
                 let detailGenerator = Self.makeImageGenerator(asset: asset, interval: fineInterval)
                 let windows = self.makeDetailWindows(
-                    from: coarse.candidates,
+                    from: hydratedCoarseCandidates,
                     duration: metadata.duration,
                     radius: selectedSensitivity.detailRadius
                 )
