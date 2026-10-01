@@ -359,6 +359,21 @@ enum VideoPipelineRuntimeSmokeTests {
 
         let positiveMatch = try matcher.bestMatch(in: targetFrames[3], mode: .balanced)
         precondition(!positiveMatch.rejectedByNegative)
+        precondition(
+            abs(positiveMatch.distance - positiveMatch.aggregationScores.nearest) < 0.0001,
+            "Default matcher must keep nearest positive aggregation"
+        )
+
+        let top2Matcher = try FeaturePrintMatcher(
+            referenceImages: [reference, secondReference],
+            negativeImages: [negativeFrame],
+            positiveAggregationMode: .top2Mean
+        )
+        let top2PositiveMatch = try top2Matcher.bestMatch(in: targetFrames[3], mode: .balanced)
+        precondition(
+            abs(top2PositiveMatch.distance - top2PositiveMatch.aggregationScores.top2Mean) < 0.0001,
+            "Top-2 matcher must return top2Mean as production distance"
+        )
 
         let negativeMatch = try matcher.bestMatch(in: negativeFrame, mode: .balanced)
         precondition(negativeMatch.rejectedByNegative)
@@ -552,6 +567,7 @@ enum VideoPipelineRuntimeSmokeTests {
         print("Two-appearance video regression: PASS")
         print("Production-tolerance frame replay: PASS")
         print("Hard-negative interval exclusion: PASS (coarse \(coarseNegativeRejections), detail \(detailNegativeRejections))")
+        print("Positive aggregation mode regression: PASS")
         print("Unseen similar decoy rejection: PASS")
     }
 }
