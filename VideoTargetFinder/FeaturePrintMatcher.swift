@@ -29,6 +29,17 @@ struct RegionMatch: Sendable {
     let aggregationScores: ReferenceAggregationScores
 }
 
+struct PreparedRegionFeature: @unchecked Sendable {
+    let observation: VNFeaturePrintObservation
+    let regionLabel: String
+    let regionNormalizedRect: CGRect
+}
+
+struct PreparedFrameFeatures: @unchecked Sendable {
+    let regions: [PreparedRegionFeature]
+}
+
+
 /// 複数の正解見本と、任意の誤検出見本を使って動画フレームを比較する。
 ///
 /// Stage 14:
@@ -77,15 +88,41 @@ final class FeaturePrintMatcher: @unchecked Sendable {
         self.positiveAggregationMode = positiveAggregationMode
     }
 
+    /// フレームの探索領域ごとのFeature Printを準備する。
+    /// 見本画像には依存しないため、同じ動画フレームを学習再探索で再評価するときに再利用できる。
+    func prepareFeatures(in image: CGImage, mode: SearchSensitivity) throws -> PreparedFrameFeatures {
+        var prepared: [PreparedRegionFeature] = []
+        prepared.reserveCapacity(FrameRegionSampler.regions(for: mode).count)
+
+        for region in FrameRegionSampler.regions(for: mode) {
+            guard let crop = FrameRegionSampler.croppedImage(from: image, region: region) else { continue }
+            prepared.append(
+                PreparedRegionFeature(
+                    observation: try Self.makeFeaturePrint(for: crop),
+                    regionLabel: region.label,
+                    regionNormalizedRect: region.normalizedRect
+                )
+            )
+        }
+
+        guard !prepared.isEmpty else { throw MatcherError.noFeaturePrint }
+        return PreparedFrameFeatures(regions: prepared)
+    }
+
     /// フレーム全体＋探索モードに応じた局所領域の中から、最も正解見本らしい組み合わせを返す。
     func bestMatch(in image: CGImage, mode: SearchSensitivity) throws -> RegionMatch {
+        try bestMatch(in: prepareFeatures(in: image, mode: mode))
+    }
+
+    /// 事前生成済みFeature Printを現在の正例・hard negativeで再評価する。
+    /// Feature Print生成だけを省略し、距離計算・top2集約・negative除外は毎回現在のMatcher条件で実行する。
+    func bestMatch(in prepared: PreparedFrameFeatures) throws -> RegionMatch {
         var bestAccepted: RegionMatch?
         var bestRejected: RegionMatch?
         var acceptedAggregationSamples: [ReferenceAggregationScores] = []
 
-        for region in FrameRegionSampler.regions(for: mode) {
-            guard let crop = FrameRegionSampler.croppedImage(from: image, region: region) else { continue }
-            let candidate = try Self.makeFeaturePrint(for: crop)
+        for preparedRegion in prepared.regions {
+            let candidate = preparedRegion.observation
 
             var positiveDistance = Float.greatestFiniteMagnitude
             var positiveIndex = 0
@@ -132,8 +169,8 @@ final class FeaturePrintMatcher: @unchecked Sendable {
             let match = RegionMatch(
                 distance: productionDistance,
                 referenceIndex: positiveIndex,
-                regionLabel: region.label,
-                regionNormalizedRect: region.normalizedRect,
+                regionLabel: preparedRegion.regionLabel,
+                regionNormalizedRect: preparedRegion.regionNormalizedRect,
                 rejectedByNegative: rejectedByNegative,
                 negativeDistance: negativeDistance,
                 aggregationScores: aggregationScores
