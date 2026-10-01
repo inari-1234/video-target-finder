@@ -52,6 +52,10 @@ struct FeedbackRescanRunSummary: Identifiable, Sendable, Codable {
     let hardNegativeCount: Int?
     /// v0.30以降。旧保存レポートではnil（旧方式はnearest）。
     let positiveAggregationMode: String?
+    /// v0.31以降。初回粗探索Feature Printを再利用したサンプル数。
+    let coarseFeatureCacheHits: Int?
+    /// v0.31以降。再探索時に新規Feature Print生成が必要だったサンプル数。
+    let coarseFeatureFreshSamples: Int?
 
     var id: Int { runNumber }
 
@@ -165,6 +169,10 @@ struct RecognitionQualityReport: Sendable, Codable {
             }
             if let mode = run.positiveAggregationMode {
                 details += ", positive aggregation \(mode)"
+            }
+            if let hits = run.coarseFeatureCacheHits,
+               let fresh = run.coarseFeatureFreshSamples {
+                details += ", coarse Feature cache \(hits) reused / \(fresh) fresh"
             }
             return details
         }.joined(separator: " / ")
