@@ -56,6 +56,10 @@ struct FeedbackRescanRunSummary: Identifiable, Sendable, Codable {
     let coarseFeatureCacheHits: Int?
     /// v0.31以降。再探索時に新規Feature Print生成が必要だったサンプル数。
     let coarseFeatureFreshSamples: Int?
+    /// v0.32以降。初回詳細探索Feature Printを再利用したサンプル数。
+    let detailFeatureCacheHits: Int?
+    /// v0.32以降。再探索詳細で新規Feature Print生成が必要だったサンプル数。
+    let detailFeatureFreshSamples: Int?
 
     var id: Int { runNumber }
 
@@ -173,6 +177,10 @@ struct RecognitionQualityReport: Sendable, Codable {
             if let hits = run.coarseFeatureCacheHits,
                let fresh = run.coarseFeatureFreshSamples {
                 details += ", coarse Feature cache \(hits) reused / \(fresh) fresh"
+            }
+            if let hits = run.detailFeatureCacheHits,
+               let fresh = run.detailFeatureFreshSamples {
+                details += ", detail Feature cache \(hits) reused / \(fresh) fresh"
             }
             return details
         }.joined(separator: " / ")
