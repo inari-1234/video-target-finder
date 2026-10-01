@@ -364,6 +364,16 @@ enum VideoPipelineRuntimeSmokeTests {
             "Default matcher must keep nearest positive aggregation"
         )
 
+        let preparedPositive = try matcher.prepareFeatures(in: targetFrames[3], mode: .balanced)
+        let cachedPositiveMatch = try matcher.bestMatch(in: preparedPositive)
+        precondition(
+            abs(cachedPositiveMatch.distance - positiveMatch.distance) < 0.0001 &&
+            cachedPositiveMatch.referenceIndex == positiveMatch.referenceIndex &&
+            cachedPositiveMatch.regionLabel == positiveMatch.regionLabel &&
+            cachedPositiveMatch.rejectedByNegative == positiveMatch.rejectedByNegative,
+            "Prepared Feature Print replay must match direct nearest evaluation"
+        )
+
         let top2Matcher = try FeaturePrintMatcher(
             referenceImages: [reference, secondReference],
             negativeImages: [negativeFrame],
@@ -373,6 +383,14 @@ enum VideoPipelineRuntimeSmokeTests {
         precondition(
             abs(top2PositiveMatch.distance - top2PositiveMatch.aggregationScores.top2Mean) < 0.0001,
             "Top-2 matcher must return top2Mean as production distance"
+        )
+        let cachedTop2PositiveMatch = try top2Matcher.bestMatch(in: preparedPositive)
+        precondition(
+            abs(cachedTop2PositiveMatch.distance - top2PositiveMatch.distance) < 0.0001 &&
+            cachedTop2PositiveMatch.referenceIndex == top2PositiveMatch.referenceIndex &&
+            cachedTop2PositiveMatch.regionLabel == top2PositiveMatch.regionLabel &&
+            cachedTop2PositiveMatch.rejectedByNegative == top2PositiveMatch.rejectedByNegative,
+            "Prepared Feature Print replay must match direct top2 evaluation"
         )
 
         let negativeMatch = try matcher.bestMatch(in: negativeFrame, mode: .balanced)
@@ -568,6 +586,7 @@ enum VideoPipelineRuntimeSmokeTests {
         print("Production-tolerance frame replay: PASS")
         print("Hard-negative interval exclusion: PASS (coarse \(coarseNegativeRejections), detail \(detailNegativeRejections))")
         print("Positive aggregation mode regression: PASS")
+        print("Prepared Feature Print replay parity: PASS")
         print("Unseen similar decoy rejection: PASS")
     }
 }
