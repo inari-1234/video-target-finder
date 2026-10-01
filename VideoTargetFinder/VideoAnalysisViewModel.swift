@@ -2112,8 +2112,16 @@ final class VideoAnalysisViewModel: ObservableObject {
         enablePersistentCheckpoint: Bool,
         candidateLimit: Int? = nil,
         initialAnalysisReserve: [CandidateBudgetPoint] = [],
-        analysisReserveLimit: Int? = nil
-    ) async throws -> (candidates: [ScanCandidate], analysisReserve: [CandidateBudgetPoint], threshold: Float) {
+        analysisReserveLimit: Int? = nil,
+        captureFeatureCache: Bool = false,
+        reuseFeatureCache: Bool = false
+    ) async throws -> (
+        candidates: [ScanCandidate],
+        analysisReserve: [CandidateBudgetPoint],
+        threshold: Float,
+        featureCacheHits: Int,
+        freshFeatureSamples: Int
+    ) {
         let totalFrames = max(1, Int(ceil(duration / interval)))
         let effectiveCandidateLimit = max(1, candidateLimit ?? sensitivity.coarseCandidateLimit)
         let effectiveAnalysisReserveLimit = max(
@@ -2123,19 +2131,68 @@ final class VideoAnalysisViewModel: ObservableObject {
         var topCandidates: [ScanCandidate] = initialCandidates
         var analysisReserve = initialAnalysisReserve
         var allScores: [Float] = initialScores
+        var featureCacheHits = 0
+        var freshFeatureSamples = 0
         topCandidates.reserveCapacity(effectiveCandidateLimit)
         analysisReserve.reserveCapacity(effectiveAnalysisReserveLimit)
         allScores.reserveCapacity(totalFrames)
+
+        if captureFeatureCache {
+            initialCoarseFeatureCache.removeAll(keepingCapacity: true)
+            initialCoarseFeatureCacheSensitivity = sensitivity
+            initialCoarseFeatureCacheInterval = interval
+        }
+
+        let canReuseFeatureCache =
+            reuseFeatureCache &&
+            initialCoarseFeatureCacheSensitivity == sensitivity &&
+            !initialCoarseFeatureCache.isEmpty
 
         for index in max(0, startIndex)..<totalFrames {
             try Task.checkCancellation()
             try await awaitRuntimePermission()
             let requestedSeconds = min(max(0, duration - 0.001), Double(index) * interval)
             let requestedTime = CMTime(seconds: requestedSeconds, preferredTimescale: 600)
+            let cacheKey = coarseFeatureCacheKey(for: requestedSeconds)
 
             do {
-                let result = try await generator.image(at: requestedTime)
-                let match = try await matchFrame(result.image, matcher: matcher, sensitivity: sensitivity)
+                let match: RegionMatch
+                let actualTime: TimeInterval
+                let thumbnail: UIImage
+
+                if canReuseFeatureCache, let cached = initialCoarseFeatureCache[cacheKey] {
+                    match = try await matchPreparedFrame(cached.features, matcher: matcher)
+                    actualTime = cached.actualTime
+                    thumbnail = Self.cachedCandidatePlaceholder
+                    featureCacheHits += 1
+                } else {
+                    let result = try await generator.image(at: requestedTime)
+                    actualTime = result.actualTime.seconds
+                    thumbnail = ImageMemoryTools.thumbnail(from: result.image, maxDimension: 320)
+                    freshFeatureSamples += 1
+
+                    if captureFeatureCache {
+                        let prepared = try await prepareAndMatchFrame(
+                            result.image,
+                            matcher: matcher,
+                            sensitivity: sensitivity
+                        )
+                        match = prepared.match
+                        if initialCoarseFeatureCache.count < Self.maxInitialCoarseFeatureCacheEntries {
+                            initialCoarseFeatureCache[cacheKey] = CoarseFeatureCacheEntry(
+                                actualTime: actualTime,
+                                features: prepared.features
+                            )
+                        }
+                    } else {
+                        match = try await matchFrame(
+                            result.image,
+                            matcher: matcher,
+                            sensitivity: sensitivity
+                        )
+                    }
+                }
+
                 if match.rejectedByNegative {
                     // 負例に明確に近いフレームは候補化しない。分布計算では下位側へ送る。
                     allScores.append(match.distance + 0.25)
@@ -2143,9 +2200,9 @@ final class VideoAnalysisViewModel: ObservableObject {
                     allScores.append(match.distance)
 
                     let candidate = ScanCandidate(
-                        time: result.actualTime.seconds,
+                        time: actualTime,
                         distance: match.distance,
-                        thumbnail: ImageMemoryTools.thumbnail(from: result.image, maxDimension: 320),
+                        thumbnail: thumbnail,
                         referenceIndex: match.referenceIndex,
                         regionLabel: match.regionLabel
                     )
@@ -2158,7 +2215,7 @@ final class VideoAnalysisViewModel: ObservableObject {
                     )
                     CandidateBudgetAnalyzer.insertDistinct(
                         CandidateBudgetPoint(
-                            time: result.actualTime.seconds,
+                            time: actualTime,
                             distance: match.distance
                         ),
                         into: &analysisReserve,
@@ -2175,7 +2232,11 @@ final class VideoAnalysisViewModel: ObservableObject {
             if index % 3 == 0 || index == totalFrames - 1 {
                 scanProgress = Double(index + 1) / Double(totalFrames)
                 candidates = topCandidates
-                statusMessage = "粗探索中… \(index + 1) / \(totalFrames) フレーム"
+                if reuseFeatureCache {
+                    statusMessage = "粗探索中… \(index + 1) / \(totalFrames) フレーム（Feature再利用 \(featureCacheHits)）"
+                } else {
+                    statusMessage = "粗探索中… \(index + 1) / \(totalFrames) フレーム"
+                }
                 if enablePersistentCheckpoint, index % 30 == 0 || index == totalFrames - 1 {
                     persistCoarseCheckpoint(
                         nextFrameIndex: index + 1,
@@ -2199,7 +2260,13 @@ final class VideoAnalysisViewModel: ObservableObject {
             ?? topCandidates.last?.distance
             ?? .greatestFiniteMagnitude
 
-        return (topCandidates, analysisReserve, threshold)
+        return (
+            topCandidates,
+            analysisReserve,
+            threshold,
+            featureCacheHits,
+            freshFeatureSamples
+        )
     }
 
     private func runDetailedScan(
