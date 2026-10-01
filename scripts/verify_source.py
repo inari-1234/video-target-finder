@@ -16,8 +16,8 @@ for p in Path(".").rglob("*"):
     assert not ("stage" in name and ("patch" in name or name.endswith(".zip"))), f"Legacy stage artifact committed: {p}"
 
 project = Path("project.yml").read_text(encoding="utf-8")
-assert re.search(r"MARKETING_VERSION:\s*0\.31\.0", project), "Version 0.31.0 missing"
-assert re.search(r"CURRENT_PROJECT_VERSION:\s*33", project), "Build 33 missing"
+assert re.search(r"MARKETING_VERSION:\s*0\.32\.0", project), "Version 0.32.0 missing"
+assert re.search(r"CURRENT_PROJECT_VERSION:\s*34", project), "Build 34 missing"
 assert "jp.inari1234.videotargetfinder" in project, "Bundle ID mismatch"
 assert "UIFileSharingEnabled: true" in project, "File Sharing must stay enabled"
 assert "LSSupportsOpeningDocumentsInPlace: true" in project, "Open-in-place must stay enabled"
@@ -123,7 +123,7 @@ assert "aggregationScores: ReferenceAggregationScores" in matcher, "Matcher diag
 assert "aggregationScores: match.aggregationScores" in view_model, "Detailed-hit aggregation diagnostics missing"
 assert "aggregationScores: diagnosticScores" in view_model, "Segment aggregation diagnostics missing"
 assert "referenceAggregationBenchmark: aggregationBenchmark" in view_model, "Recognition report aggregation benchmark missing"
-assert "evaluationSchemaVersion: 12" in view_model, "Evaluation schema 12 required"
+assert "evaluationSchemaVersion: 13" in view_model, "Evaluation schema 13 required"
 assert "見本集約方式のA/B診断" in report_view, "Aggregation benchmark UI section missing"
 assert "match.distance <= threshold" in view_model, "Production detailed acceptance must use matcher production distance"
 assert "positiveAggregationMode: PositiveAggregationMode = .nearest" in matcher, "Default matcher mode must remain nearest"
@@ -500,5 +500,27 @@ assert "粗探索Feature: 再利用" in report_view, "Feature cache reuse UI mis
 assert "Prepared Feature Print replay parity: PASS" in runtime_test, "Runtime Feature replay parity marker missing"
 assert "cachedPositiveMatch.distance - positiveMatch.distance" in runtime_test, "Runtime nearest replay parity check missing"
 assert "cachedTop2PositiveMatch.distance - top2PositiveMatch.distance" in runtime_test, "Runtime top2 replay parity check missing"
+
+
+
+# v0.32: reuse initial detailed-scan Feature Prints only after AVAssetImageGenerator resolves the same actual frame.
+assert "private static let maxInitialDetailFeatureCacheEntries = 500" in view_model, "Detail Feature cache must remain bounded"
+assert "initialDetailFeatureCacheSensitivity == sensitivity" in detail_block, "Detail Feature cache reuse must require matching sensitivity"
+assert "let result = try await generator.image(at: requestedTime)" in detail_block, "Detailed scan must still resolve the video frame before cache lookup"
+assert "let actualTime = result.actualTime.seconds" in detail_block, "Detail cache key must use AVAssetImageGenerator actualTime"
+assert "let cacheKey = detailFeatureCacheKey(for: actualTime)" in detail_block, "Detail cache actual-frame key missing"
+assert "matchPreparedFrame(cached.features, matcher: matcher)" in detail_block, "Detailed feedback scan must reevaluate cached Feature Prints with current matcher"
+assert "prepareAndMatchFrame(" in detail_block, "Initial detailed scan must generate and cache prepared Feature Prints"
+assert "captureFeatureCache: true" in initial_scan_block, "Initial detailed scan must capture Feature Prints"
+assert "reuseFeatureCache: true" in rescan_block, "Feedback detailed scan must reuse Feature Prints"
+assert "captureFeatureCache: true" not in view_model[view_model.index("restoreAndResumeInterruptedScan"):], "Recovery scan must not create a new in-memory detail cache contract"
+assert "detailFeatureCacheHits: detail.featureCacheHits" in rescan_block, "Detailed Feature cache hit diagnostics missing"
+assert "detailFeatureFreshSamples: detail.freshFeatureSamples" in rescan_block, "Detailed Feature cache fresh diagnostics missing"
+assert "let detailFeatureCacheHits: Int?" in report, "Persisted detailed Feature cache hit field missing"
+assert "let detailFeatureFreshSamples: Int?" in report, "Persisted detailed Feature cache fresh field missing"
+assert "詳細探索Feature: 再利用" in report_view, "Detailed Feature cache reuse UI missing"
+assert "Initial detail Feature cache:" in view_model, "Initial detailed Feature cache diagnostic log missing"
+assert "Feedback detail Feature cache:" in view_model, "Feedback detailed Feature cache diagnostic log missing"
+assert "mergedDetailWindows(" in Path("VideoTargetFinder/ScanPipelineCore.swift").read_text(encoding="utf-8"), "Detailed windows must remain pre-merged before cache optimization"
 
 print("Repository regression verification: PASS")
