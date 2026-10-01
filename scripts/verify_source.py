@@ -16,8 +16,8 @@ for p in Path(".").rglob("*"):
     assert not ("stage" in name and ("patch" in name or name.endswith(".zip"))), f"Legacy stage artifact committed: {p}"
 
 project = Path("project.yml").read_text(encoding="utf-8")
-assert re.search(r"MARKETING_VERSION:\s*0\.30\.0", project), "Version 0.30.0 missing"
-assert re.search(r"CURRENT_PROJECT_VERSION:\s*32", project), "Build 32 missing"
+assert re.search(r"MARKETING_VERSION:\s*0\.31\.0", project), "Version 0.31.0 missing"
+assert re.search(r"CURRENT_PROJECT_VERSION:\s*33", project), "Build 33 missing"
 assert "jp.inari1234.videotargetfinder" in project, "Bundle ID mismatch"
 assert "UIFileSharingEnabled: true" in project, "File Sharing must stay enabled"
 assert "LSSupportsOpeningDocumentsInPlace: true" in project, "Open-in-place must stay enabled"
@@ -123,7 +123,7 @@ assert "aggregationScores: ReferenceAggregationScores" in matcher, "Matcher diag
 assert "aggregationScores: match.aggregationScores" in view_model, "Detailed-hit aggregation diagnostics missing"
 assert "aggregationScores: diagnosticScores" in view_model, "Segment aggregation diagnostics missing"
 assert "referenceAggregationBenchmark: aggregationBenchmark" in view_model, "Recognition report aggregation benchmark missing"
-assert "evaluationSchemaVersion: 11" in view_model, "Evaluation schema 11 required"
+assert "evaluationSchemaVersion: 12" in view_model, "Evaluation schema 12 required"
 assert "見本集約方式のA/B診断" in report_view, "Aggregation benchmark UI section missing"
 assert "match.distance <= threshold" in view_model, "Production detailed acceptance must use matcher production distance"
 assert "positiveAggregationMode: PositiveAggregationMode = .nearest" in matcher, "Default matcher mode must remain nearest"
@@ -475,5 +475,30 @@ assert "positiveAggregationMode: .top2Mean" not in initial_scan_block, "Initial 
 assert "positiveAggregationMode: \"top2Mean\"" in rescan_block, "Feedback run provenance must record top2Mean"
 assert "Positive aggregation mode regression: PASS" in runtime_test, "Runtime top2 aggregation regression marker missing"
 assert "abs(top2PositiveMatch.distance - top2PositiveMatch.aggregationScores.top2Mean)" in runtime_test, "Runtime top2 distance equality check missing"
+
+
+
+# v0.31: reuse initial coarse Feature Prints during feedback rescan without reusing old distances.
+assert "struct PreparedFrameFeatures: @unchecked Sendable" in matcher, "Prepared frame Feature container missing"
+assert "func prepareFeatures(in image: CGImage, mode: SearchSensitivity)" in matcher, "Feature preparation API missing"
+assert "func bestMatch(in prepared: PreparedFrameFeatures)" in matcher, "Prepared Feature replay API missing"
+assert "try bestMatch(in: prepareFeatures(in: image, mode: mode))" in matcher, "Direct image matching must share the prepared-feature path"
+assert "private static let maxInitialCoarseFeatureCacheEntries = 900" in view_model, "Feature cache must remain bounded"
+assert "captureFeatureCache: true" in initial_scan_block, "Initial scan must populate the Feature cache"
+assert "reuseFeatureCache: true" in rescan_block, "Feedback rescan must request Feature cache reuse"
+assert "initialCoarseFeatureCacheSensitivity == sensitivity" in view_model, "Feature cache reuse must require matching sensitivity/region layout"
+assert "matchPreparedFrame(cached.features, matcher: matcher)" in view_model, "Feedback rescan must recompute distances from cached Feature Prints"
+assert "coarse.featureCacheHits > 0" in rescan_block, "Cached candidate thumbnails must be hydrated after coarse ranking"
+assert "hydrateCandidateThumbnails(" in rescan_block, "Feedback cached candidates must receive real thumbnails before review"
+assert "from: hydratedCoarseCandidates" in rescan_block, "Feedback detail windows must use hydrated cached candidates"
+assert "from: hydratedCoarseCandidates" not in initial_scan_block, "Initial detail scan must stay on its original coarse candidates"
+assert "coarseFeatureCacheHits: coarse.featureCacheHits" in rescan_block, "Feature cache hit diagnostics missing"
+assert "coarseFeatureFreshSamples: coarse.freshFeatureSamples" in rescan_block, "Feature cache fresh-sample diagnostics missing"
+assert "let coarseFeatureCacheHits: Int?" in report, "Persisted Feature cache hit field missing"
+assert "let coarseFeatureFreshSamples: Int?" in report, "Persisted Feature cache fresh field missing"
+assert "粗探索Feature: 再利用" in report_view, "Feature cache reuse UI missing"
+assert "Prepared Feature Print replay parity: PASS" in runtime_test, "Runtime Feature replay parity marker missing"
+assert "cachedPositiveMatch.distance - positiveMatch.distance" in runtime_test, "Runtime nearest replay parity check missing"
+assert "cachedTop2PositiveMatch.distance - top2PositiveMatch.distance" in runtime_test, "Runtime top2 replay parity check missing"
 
 print("Repository regression verification: PASS")
