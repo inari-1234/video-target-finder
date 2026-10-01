@@ -102,6 +102,7 @@ final class VideoAnalysisViewModel: ObservableObject {
         let coarseCandidateCount: Int
         let positiveReferenceCount: Int
         let hardNegativeCount: Int
+        let positiveAggregationMode: String
     }
 
     private var feedbackRescanRuns: [FeedbackRescanRuntimeRun] = []
@@ -613,7 +614,8 @@ final class VideoAnalysisViewModel: ObservableObject {
             do {
                 let matcher = try FeaturePrintMatcher(
                     referenceImages: combinedReferences,
-                    negativeImages: negativeReferences
+                    negativeImages: negativeReferences,
+                    positiveAggregationMode: .top2Mean
                 )
                 let generator = Self.makeImageGenerator(asset: asset, interval: coarseInterval)
                 let expandedCandidateLimit = max(48, selectedSensitivity.coarseCandidateLimit * 4)
@@ -624,7 +626,7 @@ final class VideoAnalysisViewModel: ObservableObject {
                     interval: coarseInterval,
                     startIndex: 0
                 )
-                DiagnosticLogger.log("Feedback rescan matcher: positives=\(combinedReferences.count), negatives=\(negativeReferences.count), candidateLimit=\(expandedCandidateLimit)")
+                DiagnosticLogger.log("Feedback rescan matcher: positives=\(combinedReferences.count), negatives=\(negativeReferences.count), candidateLimit=\(expandedCandidateLimit), positiveAggregation=top2Mean")
 
                 let coarse = try await self.runCoarseScan(
                     generator: generator,
@@ -665,7 +667,8 @@ final class VideoAnalysisViewModel: ObservableObject {
                             coarseCandidateLimit: expandedCandidateLimit,
                             coarseCandidateCount: 0,
                             positiveReferenceCount: combinedReferences.count,
-                            hardNegativeCount: negativeReferences.count
+                            hardNegativeCount: negativeReferences.count,
+                            positiveAggregationMode: "top2Mean"
                         )
                     )
                     self.scanProgress = 1
@@ -734,7 +737,8 @@ final class VideoAnalysisViewModel: ObservableObject {
                         coarseCandidateLimit: expandedCandidateLimit,
                         coarseCandidateCount: coarse.candidates.count,
                         positiveReferenceCount: combinedReferences.count,
-                        hardNegativeCount: negativeReferences.count
+                        hardNegativeCount: negativeReferences.count,
+                        positiveAggregationMode: "top2Mean"
                     )
                 )
                 self.segments = merged
@@ -1507,7 +1511,8 @@ final class VideoAnalysisViewModel: ObservableObject {
                 coarseCandidateLimit: run.coarseCandidateLimit,
                 coarseCandidateCount: run.coarseCandidateCount,
                 positiveReferenceCount: run.positiveReferenceCount,
-                hardNegativeCount: run.hardNegativeCount
+                hardNegativeCount: run.hardNegativeCount,
+                positiveAggregationMode: run.positiveAggregationMode
             )
         }
         let rescanAddedTotal = runSummaries.isEmpty
@@ -1678,7 +1683,7 @@ final class VideoAnalysisViewModel: ObservableObject {
 
         return RecognitionQualityReport(
             generatedAt: Date(),
-            evaluationSchemaVersion: 10,
+            evaluationSchemaVersion: 11,
             recognitionEngine: "Apple Vision Feature Print",
             targetLabel: targetLabel.trimmingCharacters(in: .whitespacesAndNewlines),
             videoDurationText: videoMetadata?.durationText ?? "未選択",
