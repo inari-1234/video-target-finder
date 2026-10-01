@@ -2,6 +2,20 @@
 import CoreGraphics
 import Foundation
 
+enum PositiveAggregationMode: Sendable {
+    case nearest
+    case top2Mean
+
+    func productionDistance(nearest: Float, scores: ReferenceAggregationScores) -> Float {
+        switch self {
+        case .nearest:
+            return nearest
+        case .top2Mean:
+            return scores.top2Mean
+        }
+    }
+}
+
 struct RegionMatch: Sendable {
     let distance: Float
     let referenceIndex: Int
@@ -28,9 +42,14 @@ final class FeaturePrintMatcher: @unchecked Sendable {
 
     private let positives: [PositiveReference]
     private let negatives: [VNFeaturePrintObservation]
+    private let positiveAggregationMode: PositiveAggregationMode
     private let lock = NSLock()
 
-    init(referenceImages: [CGImage], negativeImages: [CGImage] = []) throws {
+    init(
+        referenceImages: [CGImage],
+        negativeImages: [CGImage] = [],
+        positiveAggregationMode: PositiveAggregationMode = .nearest
+    ) throws {
         guard !referenceImages.isEmpty else { throw MatcherError.noReferenceImages }
 
         var positiveFeatures: [PositiveReference] = []
@@ -54,6 +73,7 @@ final class FeaturePrintMatcher: @unchecked Sendable {
             }
         }
         self.negatives = negativeFeatures
+        self.positiveAggregationMode = positiveAggregationMode
     }
 
     /// フレーム全体＋探索モードに応じた局所領域の中から、最も正解見本らしい組み合わせを返す。
@@ -88,6 +108,11 @@ final class FeaturePrintMatcher: @unchecked Sendable {
                 continue
             }
 
+            let productionDistance = positiveAggregationMode.productionDistance(
+                nearest: positiveDistance,
+                scores: aggregationScores
+            )
+
             var negativeDistance: Float?
             if !negatives.isEmpty {
                 var closest = Float.greatestFiniteMagnitude
@@ -98,12 +123,13 @@ final class FeaturePrintMatcher: @unchecked Sendable {
                 negativeDistance = closest
             }
 
-            // lower is more similar. ほぼ同点なら正解側を残し、負例が明確に近い時だけ除外する。
+            // hard negative は従来のnearest正例distance基準を維持する。
+            // 学習再探索の集約方式A/Bと負例除外を同時に変えないため。
             let separation = max(0.004, positiveDistance * 0.015)
             let rejectedByNegative = negativeDistance.map { $0 + separation < positiveDistance } ?? false
 
             let match = RegionMatch(
-                distance: positiveDistance,
+                distance: productionDistance,
                 referenceIndex: positiveIndex,
                 regionLabel: region.label,
                 regionNormalizedRect: region.normalizedRect,
@@ -113,12 +139,12 @@ final class FeaturePrintMatcher: @unchecked Sendable {
             )
 
             if rejectedByNegative {
-                if bestRejected == nil || positiveDistance < bestRejected!.distance {
+                if bestRejected == nil || productionDistance < bestRejected!.distance {
                     bestRejected = match
                 }
             } else {
                 acceptedAggregationSamples.append(aggregationScores)
-                if bestAccepted == nil || positiveDistance < bestAccepted!.distance {
+                if bestAccepted == nil || productionDistance < bestAccepted!.distance {
                     bestAccepted = match
                 }
             }
