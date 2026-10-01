@@ -333,9 +333,15 @@ struct RecognitionReportView: View {
                                 .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
-                        Text("学習再探索で追加され、○/×判定済みの候補だけを比較します。元見本＋学習見本＋hard negativeという再探索時の条件での診断です。本番の候補採否はまだ変更しません。")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        if let mode = report.rescanRuns?.last?.positiveAggregationMode {
+                            Text("学習再探索で追加され、○/×判定済みの候補だけを比較します。最新の本番再探索は正例集約 \(mode) を候補順位・しきい値計算に使用し、hard negative除外だけは従来nearest正例distance基準を維持しています。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("旧保存レポートまたは旧方式の再探索です。本番はnearest正例distanceを使用していました。")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                 }
 
