@@ -2743,6 +2743,67 @@ final class VideoAnalysisViewModel: ObservableObject {
         }.value
     }
 
+    private func prepareAndMatchFrame(
+        _ image: CGImage,
+        matcher: FeaturePrintMatcher,
+        sensitivity: SearchSensitivity
+    ) async throws -> (features: PreparedFrameFeatures, match: RegionMatch) {
+        let box = SendableCGImageBox(image)
+        return try await Task.detached(priority: .utility) {
+            try autoreleasepool {
+                let features = try matcher.prepareFeatures(in: box.image, mode: sensitivity)
+                let match = try matcher.bestMatch(in: features)
+                return (features, match)
+            }
+        }.value
+    }
+
+    private func matchPreparedFrame(
+        _ features: PreparedFrameFeatures,
+        matcher: FeaturePrintMatcher
+    ) async throws -> RegionMatch {
+        try await Task.detached(priority: .utility) {
+            try autoreleasepool {
+                try matcher.bestMatch(in: features)
+            }
+        }.value
+    }
+
+    private func coarseFeatureCacheKey(for requestedSeconds: TimeInterval) -> Int {
+        Int((requestedSeconds * 1_000).rounded())
+    }
+
+    private func hydrateCandidateThumbnails(
+        _ candidates: [ScanCandidate],
+        asset: AVAsset,
+        interval: TimeInterval
+    ) async -> [ScanCandidate] {
+        guard !candidates.isEmpty else { return candidates }
+        let generator = Self.makeImageGenerator(asset: asset, interval: interval)
+        var hydrated: [ScanCandidate] = []
+        hydrated.reserveCapacity(candidates.count)
+
+        for candidate in candidates {
+            try? Task.checkCancellation()
+            let requestedTime = CMTime(seconds: candidate.time, preferredTimescale: 600)
+            do {
+                let result = try await generator.image(at: requestedTime)
+                hydrated.append(
+                    ScanCandidate(
+                        time: candidate.time,
+                        distance: candidate.distance,
+                        thumbnail: ImageMemoryTools.thumbnail(from: result.image, maxDimension: 320),
+                        referenceIndex: candidate.referenceIndex,
+                        regionLabel: candidate.regionLabel
+                    )
+                )
+            } catch {
+                hydrated.append(candidate)
+            }
+        }
+        return hydrated
+    }
+
     private func persistCoarseCheckpoint(
         nextFrameIndex: Int,
         scores: [Float],
