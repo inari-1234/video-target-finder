@@ -32,7 +32,15 @@ struct RecognitionReportView: View {
                     LabeledContent("判定済み候補の正解率", value: report.reviewedPrecisionText)
                     if let runs = report.rescanRuns, !runs.isEmpty {
                         ForEach(runs) { run in
-                            LabeledContent("再探索 #\(run.runNumber)", value: "+\(run.addedCount) / 正解 \(run.confirmedCount)")
+                            VStack(alignment: .leading, spacing: 3) {
+                                LabeledContent("再探索 #\(run.runNumber)", value: "+\(run.addedCount) / 正解 \(run.confirmedCount)")
+                                if let hits = run.coarseFeatureCacheHits,
+                                   let fresh = run.coarseFeatureFreshSamples {
+                                    Text("粗探索Feature: 再利用 \(hits) / 新規 \(fresh)")
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
                         }
                     }
                     LabeledContent("再探索追加（累計）", value: "\(report.rescanAddedCount)")
