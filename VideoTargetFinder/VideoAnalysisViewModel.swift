@@ -95,6 +95,15 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     private var scanTask: Task<Void, Never>?
+
+    private struct CoarseFeatureCacheEntry: @unchecked Sendable {
+        let actualTime: TimeInterval
+        let features: PreparedFrameFeatures
+    }
+
+    private static let maxInitialCoarseFeatureCacheEntries = 900
+    private static let cachedCandidatePlaceholder = UIImage(systemName: "photo") ?? UIImage()
+
     private struct FeedbackRescanRuntimeRun {
         let runNumber: Int
         let addedSegmentIDs: [UUID]
@@ -103,9 +112,14 @@ final class VideoAnalysisViewModel: ObservableObject {
         let positiveReferenceCount: Int
         let hardNegativeCount: Int
         let positiveAggregationMode: String
+        let coarseFeatureCacheHits: Int
+        let coarseFeatureFreshSamples: Int
     }
 
     private var feedbackRescanRuns: [FeedbackRescanRuntimeRun] = []
+    private var initialCoarseFeatureCache: [Int: CoarseFeatureCacheEntry] = [:]
+    private var initialCoarseFeatureCacheSensitivity: SearchSensitivity?
+    private var initialCoarseFeatureCacheInterval: TimeInterval?
     private var initialCoarseReserve: [CandidateBudgetPoint] = []
     private var initialDetailCandidateBudget = 0
     private var initialCoarseReserveLimit = 0
@@ -2902,6 +2916,9 @@ final class VideoAnalysisViewModel: ObservableObject {
         learnedReferences = []
         lastFeedbackRescanAddedCount = 0
         feedbackRescanRuns = []
+        initialCoarseFeatureCache = [:]
+        initialCoarseFeatureCacheSensitivity = nil
+        initialCoarseFeatureCacheInterval = nil
         initialCoarseReserve = []
         initialDetailCandidateBudget = 0
         initialCoarseReserveLimit = 0
