@@ -122,6 +122,7 @@ final class VideoAnalysisViewModel: ObservableObject {
     private var feedbackRescanRuns: [FeedbackRescanRuntimeRun] = []
     private var initialCoarseFeatureCache: [Int: CoarseFeatureCacheEntry] = [:]
     private var initialDetailFeatureCache: [Int: CoarseFeatureCacheEntry] = [:]
+    private var initialDetailFeatureCacheSensitivity: SearchSensitivity?
     private var initialCoarseFeatureCacheSensitivity: SearchSensitivity?
     private var initialCoarseFeatureCacheInterval: TimeInterval?
     private var initialCoarseReserve: [CandidateBudgetPoint] = []
@@ -2300,11 +2301,29 @@ final class VideoAnalysisViewModel: ObservableObject {
         windows: [TimeWindow],
         interval: TimeInterval,
         sensitivity: SearchSensitivity,
-        threshold: Float
-    ) async throws -> [DetailedHit] {
+        threshold: Float,
+        captureFeatureCache: Bool = false,
+        reuseFeatureCache: Bool = false
+    ) async throws -> (
+        hits: [DetailedHit],
+        featureCacheHits: Int,
+        freshFeatureSamples: Int
+    ) {
         let totalSamples = max(1, detailSampleCount(windows: windows, interval: interval))
         var completed = 0
         var hits: [DetailedHit] = []
+        var featureCacheHits = 0
+        var freshFeatureSamples = 0
+
+        if captureFeatureCache {
+            initialDetailFeatureCache.removeAll(keepingCapacity: true)
+            initialDetailFeatureCacheSensitivity = sensitivity
+        }
+
+        let canReuseFeatureCache =
+            reuseFeatureCache &&
+            initialDetailFeatureCacheSensitivity == sensitivity &&
+            !initialDetailFeatureCache.isEmpty
 
         for window in windows {
             var t = window.start
@@ -2315,7 +2334,36 @@ final class VideoAnalysisViewModel: ObservableObject {
 
                 do {
                     let result = try await generator.image(at: requestedTime)
-                    let match = try await matchFrame(result.image, matcher: matcher, sensitivity: sensitivity)
+                    let actualTime = result.actualTime.seconds
+                    let cacheKey = detailFeatureCacheKey(for: actualTime)
+                    let match: RegionMatch
+
+                    if canReuseFeatureCache, let cached = initialDetailFeatureCache[cacheKey] {
+                        match = try await matchPreparedFrame(cached.features, matcher: matcher)
+                        featureCacheHits += 1
+                    } else if captureFeatureCache {
+                        let prepared = try await prepareAndMatchFrame(
+                            result.image,
+                            matcher: matcher,
+                            sensitivity: sensitivity
+                        )
+                        match = prepared.match
+                        freshFeatureSamples += 1
+                        if initialDetailFeatureCache.count < Self.maxInitialDetailFeatureCacheEntries {
+                            initialDetailFeatureCache[cacheKey] = CoarseFeatureCacheEntry(
+                                actualTime: actualTime,
+                                features: prepared.features
+                            )
+                        }
+                    } else {
+                        match = try await matchFrame(
+                            result.image,
+                            matcher: matcher,
+                            sensitivity: sensitivity
+                        )
+                        freshFeatureSamples += 1
+                    }
+
                     if !match.rejectedByNegative, match.distance <= threshold {
                         let matchedCGImage = FrameRegionSampler.croppedImage(
                             from: result.image,
@@ -2332,7 +2380,7 @@ final class VideoAnalysisViewModel: ObservableObject {
                         }
 
                         hits.append(DetailedHit(
-                            time: result.actualTime.seconds,
+                            time: actualTime,
                             distance: match.distance,
                             thumbnailJPEG: frameData,
                             matchThumbnailJPEG: matchData,
@@ -2350,14 +2398,22 @@ final class VideoAnalysisViewModel: ObservableObject {
                 completed += 1
                 if completed % 4 == 0 || completed == totalSamples {
                     scanProgress = min(1, Double(completed) / Double(totalSamples))
-                    statusMessage = "詳細探索中… \(completed) / \(totalSamples) フレーム"
+                    if reuseFeatureCache {
+                        statusMessage = "詳細探索中… \(completed) / \(totalSamples) フレーム（Feature再利用 \(featureCacheHits)）"
+                    } else {
+                        statusMessage = "詳細探索中… \(completed) / \(totalSamples) フレーム"
+                    }
                     await Task.yield()
                 }
                 t += interval
             }
         }
 
-        return hits.sorted { $0.time < $1.time }
+        return (
+            hits.sorted { $0.time < $1.time },
+            featureCacheHits,
+            freshFeatureSamples
+        )
     }
 
     private func buildSegments(
@@ -2865,6 +2921,10 @@ final class VideoAnalysisViewModel: ObservableObject {
         Int((requestedSeconds * 1_000).rounded())
     }
 
+    private func detailFeatureCacheKey(for actualSeconds: TimeInterval) -> Int {
+        Int((actualSeconds * 1_000).rounded())
+    }
+
     private func hydrateCandidateThumbnails(
         _ candidates: [ScanCandidate],
         asset: AVAsset,
@@ -3071,6 +3131,7 @@ final class VideoAnalysisViewModel: ObservableObject {
         feedbackRescanRuns = []
         initialCoarseFeatureCache = [:]
         initialDetailFeatureCache = [:]
+        initialDetailFeatureCacheSensitivity = nil
         initialCoarseFeatureCacheSensitivity = nil
         initialCoarseFeatureCacheInterval = nil
         initialCoarseReserve = []
