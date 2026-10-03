@@ -164,6 +164,109 @@ enum ScanPipelineCoreTests {
         )
         precondition(beyondTolerance.count == 2)
 
+        // Regression 1: a genuinely continuous ~10 s appearance must remain one segment.
+        let continuousTenSecondHits = stride(from: 0.0, through: 10.0, by: 0.25).map {
+            ScanPipelinePoint(time: $0, distance: 0.20)
+        }
+        let continuousTenSecond = ScanPipelineCore.segmentPlans(
+            hits: continuousTenSecondHits,
+            duration: 10.0,
+            detailInterval: 0.25
+        )
+        precondition(continuousTenSecond.count == 1)
+        precondition(continuousTenSecond[0].hitCount == continuousTenSecondHits.count)
+
+        // Regression 2: a 1-2 s temporary recognition dip may bridge only when
+        // the gap itself retains near-threshold, non-negative evidence.
+        let weakGapHits = [
+            ScanPipelinePoint(time: 0.00, distance: 0.20),
+            ScanPipelinePoint(time: 0.25, distance: 0.19),
+            ScanPipelinePoint(time: 0.50, distance: 0.21),
+            ScanPipelinePoint(time: 0.75, distance: 0.20),
+            ScanPipelinePoint(time: 1.00, distance: 0.22),
+            ScanPipelinePoint(time: 3.00, distance: 0.21),
+            ScanPipelinePoint(time: 3.25, distance: 0.20),
+            ScanPipelinePoint(time: 3.50, distance: 0.19),
+            ScanPipelinePoint(time: 3.75, distance: 0.20),
+            ScanPipelinePoint(time: 4.00, distance: 0.21)
+        ]
+        let weakGapObservations = stride(from: 1.25, through: 2.75, by: 0.25).map {
+            ScanPipelineObservation(
+                time: $0,
+                distance: 0.312,
+                rejectedByNegative: false,
+                isAcceptedHit: false
+            )
+        }
+        let bridgedWeakGap = ScanPipelineCore.segmentPlans(
+            hits: weakGapHits,
+            duration: 5.0,
+            detailInterval: 0.25,
+            observations: weakGapObservations,
+            hitThreshold: 0.30
+        )
+        precondition(bridgedWeakGap.count == 1)
+        precondition(bridgedWeakGap[0].hitCount == weakGapHits.count)
+
+        // Regression 3: a real disappearance must stay split even when the
+        // timestamps would otherwise fit inside the bridge ceiling.
+        let absentGapObservations = stride(from: 1.25, through: 2.75, by: 0.25).map {
+            ScanPipelineObservation(
+                time: $0,
+                distance: 0.46,
+                rejectedByNegative: false,
+                isAcceptedHit: false
+            )
+        }
+        let trulyAbsent = ScanPipelineCore.segmentPlans(
+            hits: weakGapHits,
+            duration: 5.0,
+            detailInterval: 0.25,
+            observations: absentGapObservations,
+            hitThreshold: 0.30
+        )
+        precondition(trulyAbsent.count == 2)
+
+        // Existing hard-negative output is an explicit veto for bridging.
+        var negativeGapObservations = weakGapObservations
+        negativeGapObservations[3] = ScanPipelineObservation(
+            time: negativeGapObservations[3].time,
+            distance: negativeGapObservations[3].distance,
+            rejectedByNegative: true,
+            isAcceptedHit: false
+        )
+        let hardNegativeGap = ScanPipelineCore.segmentPlans(
+            hits: weakGapHits,
+            duration: 5.0,
+            detailInterval: 0.25,
+            observations: negativeGapObservations,
+            hitThreshold: 0.30
+        )
+        precondition(hardNegativeGap.count == 2)
+
+        // Regression 4: a later reappearance remains a separate segment even if
+        // both appearances independently have strong, dense hits.
+        let reappearanceHits = [
+            ScanPipelinePoint(time: 0.00, distance: 0.20),
+            ScanPipelinePoint(time: 0.25, distance: 0.19),
+            ScanPipelinePoint(time: 0.50, distance: 0.21),
+            ScanPipelinePoint(time: 0.75, distance: 0.20),
+            ScanPipelinePoint(time: 1.00, distance: 0.22),
+            ScanPipelinePoint(time: 4.00, distance: 0.21),
+            ScanPipelinePoint(time: 4.25, distance: 0.20),
+            ScanPipelinePoint(time: 4.50, distance: 0.19),
+            ScanPipelinePoint(time: 4.75, distance: 0.20),
+            ScanPipelinePoint(time: 5.00, distance: 0.21)
+        ]
+        let reappearance = ScanPipelineCore.segmentPlans(
+            hits: reappearanceHits,
+            duration: 6.0,
+            detailInterval: 0.25,
+            observations: weakGapObservations,
+            hitThreshold: 0.30
+        )
+        precondition(reappearance.count == 2)
+
         print("ScanPipelineCore boundary cases: PASS")
         print("ScanPipelineCore tests: PASS")
     }
