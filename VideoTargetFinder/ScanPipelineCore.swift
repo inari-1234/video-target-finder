@@ -262,3 +262,4 @@ enum ScanPipelineCore {
             abs($0.time - midpoint) <= midpointWindow
         }
     }
+}
