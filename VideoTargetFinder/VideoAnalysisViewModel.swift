@@ -432,6 +432,8 @@ final class VideoAnalysisViewModel: ObservableObject {
                 try Task.checkCancellation()
                 self.segments = self.buildSegments(
                     from: detail.hits,
+                    observations: detail.observations,
+                    hitThreshold: detailThreshold,
                     duration: metadata.duration,
                     detailInterval: fineInterval
                 )
@@ -764,6 +766,8 @@ final class VideoAnalysisViewModel: ObservableObject {
                 try Task.checkCancellation()
                 let rescannedSegments = self.buildSegments(
                     from: detail.hits,
+                    observations: detail.observations,
+                    hitThreshold: detailThreshold,
                     duration: metadata.duration,
                     detailInterval: fineInterval
                 )
@@ -2320,12 +2324,14 @@ final class VideoAnalysisViewModel: ObservableObject {
         reuseFeatureCache: Bool = false
     ) async throws -> (
         hits: [DetailedHit],
+        observations: [ScanPipelineObservation],
         featureCacheHits: Int,
         freshFeatureSamples: Int
     ) {
         let totalSamples = max(1, detailSampleCount(windows: windows, interval: interval))
         var completed = 0
         var hits: [DetailedHit] = []
+        var observations: [ScanPipelineObservation] = []
         var featureCacheHits = 0
         var freshFeatureSamples = 0
 
@@ -2378,7 +2384,19 @@ final class VideoAnalysisViewModel: ObservableObject {
                         freshFeatureSamples += 1
                     }
 
-                    if !match.rejectedByNegative, match.distance <= threshold {
+                    let isAcceptedHit =
+                        !match.rejectedByNegative &&
+                        match.distance <= threshold
+                    observations.append(
+                        ScanPipelineObservation(
+                            time: actualTime,
+                            distance: match.distance,
+                            rejectedByNegative: match.rejectedByNegative,
+                            isAcceptedHit: isAcceptedHit
+                        )
+                    )
+
+                    if isAcceptedHit {
                         let matchedCGImage = FrameRegionSampler.croppedImage(
                             from: result.image,
                             normalizedRect: match.regionNormalizedRect
@@ -2425,6 +2443,7 @@ final class VideoAnalysisViewModel: ObservableObject {
 
         return (
             hits.sorted { $0.time < $1.time },
+            observations.sorted { $0.time < $1.time },
             featureCacheHits,
             freshFeatureSamples
         )
@@ -2432,6 +2451,8 @@ final class VideoAnalysisViewModel: ObservableObject {
 
     private func buildSegments(
         from hits: [DetailedHit],
+        observations: [ScanPipelineObservation],
+        hitThreshold: Float,
         duration: TimeInterval,
         detailInterval: TimeInterval
     ) -> [DetectedSegment] {
@@ -2440,7 +2461,9 @@ final class VideoAnalysisViewModel: ObservableObject {
                 ScanPipelinePoint(time: $0.time, distance: $0.distance)
             },
             duration: duration,
-            detailInterval: detailInterval
+            detailInterval: detailInterval,
+            observations: observations,
+            hitThreshold: hitThreshold
         )
 
         return plans.compactMap { plan in
@@ -2742,6 +2765,8 @@ final class VideoAnalysisViewModel: ObservableObject {
 
                         self.segments = self.buildSegments(
                             from: detail.hits,
+                            observations: detail.observations,
+                            hitThreshold: detailThreshold,
                             duration: metadata.duration,
                             detailInterval: fineInterval
                         )
