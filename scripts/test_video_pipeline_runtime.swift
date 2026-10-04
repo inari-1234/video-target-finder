@@ -468,6 +468,86 @@ enum VideoPipelineRuntimeSmokeTests {
             precondition(rect.minX >= 0 && rect.minY >= 0 && rect.maxX <= 1 && rect.maxY <= 1)
         }
 
+        // Segment continuity gate: both directions must meet on the same visible
+        // subject at the midpoint. This is independent of Feature Print thresholding.
+        let continuityForward = [
+            VisionTrackingFrameOutput(
+                boundingBox: CGRect(x: 0.30, y: 0.27, width: 0.36, height: 0.46),
+                confidence: 0.82,
+                requestFailed: false
+            ),
+            VisionTrackingFrameOutput(
+                boundingBox: CGRect(x: 0.32, y: 0.27, width: 0.36, height: 0.46),
+                confidence: 0.78,
+                requestFailed: false
+            ),
+            VisionTrackingFrameOutput(
+                boundingBox: CGRect(x: 0.34, y: 0.27, width: 0.36, height: 0.46),
+                confidence: 0.75,
+                requestFailed: false
+            )
+        ]
+        let continuityBackward = [
+            VisionTrackingFrameOutput(
+                boundingBox: CGRect(x: 0.39, y: 0.27, width: 0.36, height: 0.46),
+                confidence: 0.80,
+                requestFailed: false
+            ),
+            VisionTrackingFrameOutput(
+                boundingBox: CGRect(x: 0.37, y: 0.27, width: 0.36, height: 0.46),
+                confidence: 0.77,
+                requestFailed: false
+            ),
+            VisionTrackingFrameOutput(
+                boundingBox: CGRect(x: 0.35, y: 0.27, width: 0.36, height: 0.46),
+                confidence: 0.74,
+                requestFailed: false
+            )
+        ]
+        let midpointReference = CGRect(
+            x: 0.345,
+            y: 0.27,
+            width: 0.36,
+            height: 0.46
+        )
+        precondition(
+            SegmentContinuityAnalyzer.shouldBridge(
+                forward: continuityForward,
+                backward: continuityBackward,
+                midpointReferenceRect: midpointReference
+            ),
+            "Bidirectional tracking that meets on the same visible subject must bridge"
+        )
+
+        let divergedBackward = [
+            VisionTrackingFrameOutput(
+                boundingBox: CGRect(x: 0.75, y: 0.08, width: 0.16, height: 0.20),
+                confidence: 0.80,
+                requestFailed: false
+            ),
+            VisionTrackingFrameOutput(
+                boundingBox: CGRect(x: 0.77, y: 0.08, width: 0.16, height: 0.20),
+                confidence: 0.78,
+                requestFailed: false
+            )
+        ]
+        precondition(
+            !SegmentContinuityAnalyzer.shouldBridge(
+                forward: continuityForward,
+                backward: divergedBackward,
+                midpointReferenceRect: midpointReference
+            ),
+            "Tracking that lands on different subjects must not bridge"
+        )
+        precondition(
+            !SegmentContinuityAnalyzer.shouldBridge(
+                forward: continuityForward,
+                backward: continuityBackward,
+                midpointReferenceRect: nil
+            ),
+            "No visible midpoint subject must not bridge"
+        )
+
 
         let coarseInterval = 0.50
         let coarseGenerator = makeProductionGenerator(
@@ -587,6 +667,7 @@ enum VideoPipelineRuntimeSmokeTests {
         print("Hard-negative interval exclusion: PASS (coarse \(coarseNegativeRejections), detail \(detailNegativeRejections))")
         print("Positive aggregation mode regression: PASS")
         print("Prepared Feature Print replay parity: PASS")
+        print("Segment visual-continuity gate regression: PASS")
         print("Unseen similar decoy rejection: PASS")
     }
 }
