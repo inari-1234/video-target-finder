@@ -430,12 +430,15 @@ final class VideoAnalysisViewModel: ObservableObject {
                 )
 
                 try Task.checkCancellation()
-                self.segments = self.buildSegments(
+                self.segments = try await self.buildSegments(
                     from: detail.hits,
                     observations: detail.observations,
                     hitThreshold: detailThreshold,
                     duration: metadata.duration,
-                    detailInterval: fineInterval
+                    detailInterval: fineInterval,
+                    asset: asset,
+                    matcher: matcher,
+                    sensitivity: selectedSensitivity
                 )
                 ScanCheckpointStore.clear()
                 self.hasRecoverableScan = false
@@ -764,12 +767,15 @@ final class VideoAnalysisViewModel: ObservableObject {
                 )
 
                 try Task.checkCancellation()
-                let rescannedSegments = self.buildSegments(
+                let rescannedSegments = try await self.buildSegments(
                     from: detail.hits,
                     observations: detail.observations,
                     hitThreshold: detailThreshold,
                     duration: metadata.duration,
-                    detailInterval: fineInterval
+                    detailInterval: fineInterval,
+                    asset: asset,
+                    matcher: matcher,
+                    sensitivity: selectedSensitivity
                 )
                 let merged = self.mergeFeedbackRescanSegments(
                     existing: preservedSegments,
@@ -2454,17 +2460,45 @@ final class VideoAnalysisViewModel: ObservableObject {
         observations: [ScanPipelineObservation],
         hitThreshold: Float,
         duration: TimeInterval,
-        detailInterval: TimeInterval
-    ) -> [DetectedSegment] {
-        let plans = ScanPipelineCore.segmentPlans(
-            hits: hits.map {
-                ScanPipelinePoint(time: $0.time, distance: $0.distance)
-            },
+        detailInterval: TimeInterval,
+        asset: AVAsset,
+        matcher: FeaturePrintMatcher,
+        sensitivity: SearchSensitivity
+    ) async throws -> [DetectedSegment] {
+        let points = hits.map {
+            ScanPipelinePoint(time: $0.time, distance: $0.distance)
+        }
+        let preliminaryPlans = ScanPipelineCore.segmentPlans(
+            hits: points,
             duration: duration,
             detailInterval: detailInterval,
             observations: observations,
             hitThreshold: hitThreshold
         )
+
+        let continuityWindows = try await confirmedVisualContinuityWindows(
+            preliminaryPlans: preliminaryPlans,
+            hits: hits,
+            observations: observations,
+            asset: asset,
+            matcher: matcher,
+            sensitivity: sensitivity,
+            detailInterval: detailInterval
+        )
+
+        let plans: [ScanPipelineSegmentPlan]
+        if continuityWindows.isEmpty {
+            plans = preliminaryPlans
+        } else {
+            plans = ScanPipelineCore.segmentPlans(
+                hits: points,
+                duration: duration,
+                detailInterval: detailInterval,
+                observations: observations,
+                hitThreshold: hitThreshold,
+                confirmedContinuityWindows: continuityWindows
+            )
+        }
 
         return plans.compactMap { plan in
             let group = hits[plan.hitRange]
@@ -2491,6 +2525,252 @@ final class VideoAnalysisViewModel: ObservableObject {
                 aggregationScores: diagnosticScores
             )
         }
+    }
+
+    private func confirmedVisualContinuityWindows(
+        preliminaryPlans: [ScanPipelineSegmentPlan],
+        hits: [DetailedHit],
+        observations: [ScanPipelineObservation],
+        asset: AVAsset,
+        matcher: FeaturePrintMatcher,
+        sensitivity: SearchSensitivity,
+        detailInterval: TimeInterval
+    ) async throws -> [ScanPipelineTimeWindow] {
+        guard preliminaryPlans.count > 1 else { return [] }
+
+        let maximumBridgeSpan = ScanPipelineCore.maximumContinuityBridgeSpan(
+            detailInterval: detailInterval
+        )
+        let generator = Self.makeExactDiagnosticImageGenerator(asset: asset)
+        var confirmed: [ScanPipelineTimeWindow] = []
+
+        for index in 1..<preliminaryPlans.count {
+            try Task.checkCancellation()
+            let leftPlan = preliminaryPlans[index - 1]
+            let rightPlan = preliminaryPlans[index]
+            guard leftPlan.hitRange.upperBound > leftPlan.hitRange.lowerBound,
+                  rightPlan.hitRange.upperBound > rightPlan.hitRange.lowerBound else {
+                continue
+            }
+
+            let leftHit = hits[leftPlan.hitRange.upperBound - 1]
+            let rightHit = hits[rightPlan.hitRange.lowerBound]
+            let gap = rightHit.time - leftHit.time
+            guard gap > 0, gap <= maximumBridgeSpan else { continue }
+
+            let interior = observations.filter {
+                $0.time > leftHit.time &&
+                $0.time < rightHit.time
+            }
+            guard !interior.isEmpty,
+                  !interior.contains(where: { $0.rejectedByNegative }) else {
+                continue
+            }
+
+            let isContinuous = try await visuallyConfirmsContinuity(
+                leftHit: leftHit,
+                rightHit: rightHit,
+                generator: generator,
+                matcher: matcher,
+                sensitivity: sensitivity,
+                detailInterval: detailInterval
+            )
+            if isContinuous {
+                confirmed.append(
+                    ScanPipelineTimeWindow(
+                        start: leftHit.time,
+                        end: rightHit.time
+                    )
+                )
+                DiagnosticLogger.log(
+                    String(
+                        format: "Segment continuity bridge confirmed: %.3f -> %.3f (gap %.3fs)",
+                        leftHit.time,
+                        rightHit.time,
+                        gap
+                    )
+                )
+            }
+        }
+
+        return confirmed
+    }
+
+    private func visuallyConfirmsContinuity(
+        leftHit: DetailedHit,
+        rightHit: DetailedHit,
+        generator: AVAssetImageGenerator,
+        matcher: FeaturePrintMatcher,
+        sensitivity: SearchSensitivity,
+        detailInterval: TimeInterval
+    ) async throws -> Bool {
+        let regions = FrameRegionSampler.regions(for: sensitivity)
+        guard let leftRegion = regions.first(where: { $0.label == leftHit.regionLabel }),
+              let rightRegion = regions.first(where: { $0.label == rightHit.regionLabel }),
+              let leftSeed = try await continuityTrackingSeed(
+                  at: leftHit.time,
+                  region: leftRegion,
+                  generator: generator,
+                  matcher: matcher
+              ),
+              let rightSeed = try await continuityTrackingSeed(
+                  at: rightHit.time,
+                  region: rightRegion,
+                  generator: generator,
+                  matcher: matcher
+              ) else {
+            return false
+        }
+
+        let midpoint = (leftHit.time + rightHit.time) / 2.0
+        let midpointRegionRect = leftRegion.normalizedRect
+            .union(rightRegion.normalizedRect)
+            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        guard !midpointRegionRect.isNull,
+              midpointRegionRect.width > 0,
+              midpointRegionRect.height > 0 else {
+            return false
+        }
+
+        let midpointFrame = try await generator.image(
+            at: CMTime(seconds: midpoint, preferredTimescale: 600)
+        ).image
+        guard let midpointCrop = FrameRegionSampler.croppedImage(
+            from: midpointFrame,
+            normalizedRect: midpointRegionRect
+        ) else {
+            return false
+        }
+        let midpointBox = SendableCGImageBox(midpointCrop)
+        let midpointSeedResult = await Task.detached(priority: .utility) {
+            autoreleasepool {
+                VisionMaskDiagnosticEngine.bestForegroundTrackingSeed(
+                    image: midpointBox.image,
+                    matcher: matcher
+                )
+            }
+        }.value
+        guard let midpointLocalRect = midpointSeedResult.localTopLeftRect,
+              let midpointReferenceRect = TrackingSeedBoxAnalyzer.mapLocalTopLeftRectToVision(
+                  midpointLocalRect,
+                  searchRegionTopLeft: midpointRegionRect
+              ) else {
+            return false
+        }
+
+        let step = min(0.20, max(0.10, detailInterval / 2.0))
+        let forwardTimes = continuitySampleTimes(
+            from: leftHit.time,
+            to: midpoint,
+            step: step
+        )
+        let backwardTimes = continuitySampleTimes(
+            from: rightHit.time,
+            to: midpoint,
+            step: step
+        )
+        guard forwardTimes.count >= 2, backwardTimes.count >= 2 else {
+            return false
+        }
+
+        let forwardImages = try await continuityFrames(
+            at: forwardTimes,
+            generator: generator
+        )
+        let backwardImages = try await continuityFrames(
+            at: backwardTimes,
+            generator: generator
+        )
+        let forwardSequence = SendableCGImageSequence(images: forwardImages)
+        let backwardSequence = SendableCGImageSequence(images: backwardImages)
+        let paddedLeftSeed = ObjectTrackingDiagnosticAnalyzer.paddedSeedRect(leftSeed)
+        let paddedRightSeed = ObjectTrackingDiagnosticAnalyzer.paddedSeedRect(rightSeed)
+
+        async let forward = Task.detached(priority: .utility) {
+            VisionObjectTrackingEngine.track(
+                images: forwardSequence.images,
+                seedRect: paddedLeftSeed
+            )
+        }.value
+        async let backward = Task.detached(priority: .utility) {
+            VisionObjectTrackingEngine.track(
+                images: backwardSequence.images,
+                seedRect: paddedRightSeed
+            )
+        }.value
+
+        return SegmentContinuityAnalyzer.shouldBridge(
+            forward: await forward,
+            backward: await backward,
+            midpointReferenceRect: midpointReferenceRect
+        )
+    }
+
+    private func continuityTrackingSeed(
+        at time: TimeInterval,
+        region: SearchRegion,
+        generator: AVAssetImageGenerator,
+        matcher: FeaturePrintMatcher
+    ) async throws -> CGRect? {
+        let frame = try await generator.image(
+            at: CMTime(seconds: time, preferredTimescale: 600)
+        ).image
+        guard let crop = FrameRegionSampler.croppedImage(
+            from: frame,
+            normalizedRect: region.normalizedRect
+        ) else {
+            return nil
+        }
+
+        let box = SendableCGImageBox(crop)
+        let seed = await Task.detached(priority: .utility) {
+            autoreleasepool {
+                VisionMaskDiagnosticEngine.bestForegroundTrackingSeed(
+                    image: box.image,
+                    matcher: matcher
+                )
+            }
+        }.value
+        return seed.localTopLeftRect.flatMap {
+            TrackingSeedBoxAnalyzer.mapLocalTopLeftRectToVision(
+                $0,
+                searchRegionTopLeft: region.normalizedRect
+            )
+        }
+    }
+
+    private func continuitySampleTimes(
+        from start: TimeInterval,
+        to end: TimeInterval,
+        step: TimeInterval
+    ) -> [TimeInterval] {
+        guard step > 0, start != end else { return [] }
+        let direction: TimeInterval = end > start ? 1 : -1
+        var current = start + direction * step
+        var result: [TimeInterval] = []
+
+        while direction > 0 ? current < end - 0.001 : current > end + 0.001 {
+            result.append(current)
+            current += direction * step
+        }
+        result.append(end)
+        return result
+    }
+
+    private func continuityFrames(
+        at times: [TimeInterval],
+        generator: AVAssetImageGenerator
+    ) async throws -> [CGImage] {
+        var images: [CGImage] = []
+        images.reserveCapacity(times.count)
+        for time in times {
+            try Task.checkCancellation()
+            let frame = try await generator.image(
+                at: CMTime(seconds: time, preferredTimescale: 600)
+            )
+            images.append(frame.image)
+        }
+        return images
     }
 
     private func refreshLearnedReferencesFromConfirmedSegments() {
@@ -2763,12 +3043,15 @@ final class VideoAnalysisViewModel: ObservableObject {
                         )
                         self.recordPerformanceRun(kind: .recovery, runNumber: nil, phases: performancePhases)
 
-                        self.segments = self.buildSegments(
+                        self.segments = try await self.buildSegments(
                             from: detail.hits,
                             observations: detail.observations,
                             hitThreshold: detailThreshold,
                             duration: metadata.duration,
-                            detailInterval: fineInterval
+                            detailInterval: fineInterval,
+                            asset: asset,
+                            matcher: matcher,
+                            sensitivity: checkpoint.sensitivity
                         )
                         ScanCheckpointStore.clear()
                         self.hasRecoverableScan = false
