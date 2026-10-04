@@ -208,6 +208,56 @@ enum ScanPipelineCoreTests {
         precondition(bridgedWeakGap.count == 1)
         precondition(bridgedWeakGap[0].hitCount == weakGapHits.count)
 
+        // Exact reported failure mode: the subject is still visually continuous,
+        // but Feature Print completely drops out inside the short gap.
+        let fullDropoutObservations = stride(from: 1.25, through: 2.75, by: 0.25).map {
+            ScanPipelineObservation(
+                time: $0,
+                distance: 0.60,
+                rejectedByNegative: false,
+                isAcceptedHit: false
+            )
+        }
+        let fullDropoutWithoutVisualConfirmation = ScanPipelineCore.segmentPlans(
+            hits: weakGapHits,
+            duration: 5.0,
+            detailInterval: 0.25,
+            observations: fullDropoutObservations,
+            hitThreshold: 0.30
+        )
+        precondition(fullDropoutWithoutVisualConfirmation.count == 2)
+
+        let fullDropoutWithVisualConfirmation = ScanPipelineCore.segmentPlans(
+            hits: weakGapHits,
+            duration: 5.0,
+            detailInterval: 0.25,
+            observations: fullDropoutObservations,
+            hitThreshold: 0.30,
+            confirmedContinuityWindows: [
+                ScanPipelineTimeWindow(start: 1.00, end: 3.00)
+            ]
+        )
+        precondition(fullDropoutWithVisualConfirmation.count == 1)
+
+        var fullDropoutWithNegative = fullDropoutObservations
+        fullDropoutWithNegative[3] = ScanPipelineObservation(
+            time: fullDropoutWithNegative[3].time,
+            distance: fullDropoutWithNegative[3].distance,
+            rejectedByNegative: true,
+            isAcceptedHit: false
+        )
+        let confirmedButHardNegative = ScanPipelineCore.segmentPlans(
+            hits: weakGapHits,
+            duration: 5.0,
+            detailInterval: 0.25,
+            observations: fullDropoutWithNegative,
+            hitThreshold: 0.30,
+            confirmedContinuityWindows: [
+                ScanPipelineTimeWindow(start: 1.00, end: 3.00)
+            ]
+        )
+        precondition(confirmedButHardNegative.count == 2)
+
         // Regression 3: a real disappearance must stay split even when the
         // timestamps would otherwise fit inside the bridge ceiling.
         let absentGapObservations = stride(from: 1.25, through: 2.75, by: 0.25).map {
