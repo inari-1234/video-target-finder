@@ -71,6 +71,15 @@ enum ScanPipelineCore {
         coarseThreshold + max(0.015, coarseThreshold * 0.08)
     }
 
+    static func toleratedMissSpan(detailInterval: TimeInterval) -> TimeInterval {
+        max(0.90, detailInterval * 5.0)
+    }
+
+    static func maximumContinuityBridgeSpan(detailInterval: TimeInterval) -> TimeInterval {
+        let tolerated = toleratedMissSpan(detailInterval: detailInterval)
+        return max(tolerated, min(2.25, tolerated + 1.0))
+    }
+
     static func mergedDetailWindows(
         candidates: [ScanPipelinePoint],
         duration: TimeInterval,
@@ -103,11 +112,12 @@ enum ScanPipelineCore {
         duration: TimeInterval,
         detailInterval: TimeInterval,
         observations: [ScanPipelineObservation] = [],
-        hitThreshold: Float? = nil
+        hitThreshold: Float? = nil,
+        confirmedContinuityWindows: [ScanPipelineTimeWindow] = []
     ) -> [ScanPipelineSegmentPlan] {
         guard !hits.isEmpty else { return [] }
 
-        let toleratedMissSpan = max(0.90, detailInterval * 5.0)
+        let toleratedMissSpan = toleratedMissSpan(detailInterval: detailInterval)
         let edgePadding = max(0.40, detailInterval * 1.5)
         let sortedObservations = observations.sorted { $0.time < $1.time }
 
@@ -124,7 +134,8 @@ enum ScanPipelineCore {
                        observations: sortedObservations,
                        hitThreshold: hitThreshold,
                        detailInterval: detailInterval,
-                       toleratedMissSpan: toleratedMissSpan
+                       toleratedMissSpan: toleratedMissSpan,
+                       confirmedContinuityWindows: confirmedContinuityWindows
                    ) {
                     ranges.append(groupStart..<index)
                     groupStart = index
@@ -174,10 +185,10 @@ enum ScanPipelineCore {
         observations: [ScanPipelineObservation],
         hitThreshold: Float?,
         detailInterval: TimeInterval,
-        toleratedMissSpan: TimeInterval
+        toleratedMissSpan: TimeInterval,
+        confirmedContinuityWindows: [ScanPipelineTimeWindow]
     ) -> Bool {
-        guard let hitThreshold,
-              !observations.isEmpty,
+        guard !observations.isEmpty,
               splitIndex > 0,
               splitIndex < hits.count else {
             return false
@@ -186,9 +197,8 @@ enum ScanPipelineCore {
         let leftHit = hits[splitIndex - 1]
         let rightHit = hits[splitIndex]
         let gap = rightHit.time - leftHit.time
-        let maximumBridgeSpan = max(
-            toleratedMissSpan,
-            min(2.25, toleratedMissSpan + 1.0)
+        let maximumBridgeSpan = maximumContinuityBridgeSpan(
+            detailInterval: detailInterval
         )
         guard gap <= maximumBridgeSpan else { return false }
 
@@ -235,8 +245,20 @@ enum ScanPipelineCore {
             return false
         }
 
-        // A temporary miss must still retain near-threshold Feature Print
-        // evidence. These samples do not become hits and do not change the
+        // A separately confirmed visual-continuity result can bridge a complete
+        // Feature Print dropout. This does not alter recognition thresholds.
+        let continuityConfirmed = confirmedContinuityWindows.contains { window in
+            window.start <= leftHit.time + epsilon &&
+            window.end >= rightHit.time - epsilon
+        }
+        if continuityConfirmed {
+            return true
+        }
+
+        guard let hitThreshold else { return false }
+
+        // Otherwise, a temporary miss must still retain near-threshold Feature
+        // Print evidence. These samples do not become hits and do not change the
         // recognition threshold; they are bridge-only evidence.
         let bridgeEvidenceThreshold =
             hitThreshold + max(0.015, hitThreshold * 0.08)
