@@ -64,7 +64,7 @@ jobs:
 
       - name: Video decode + recognition pipeline runtime smoke test
         run: |
-          swiftc VideoTargetFinder/ScanPipelineCore.swift VideoTargetFinder/SearchSensitivity.swift VideoTargetFinder/FrameRegionSampler.swift VideoTargetFinder/ReferenceScoreAnalyzer.swift VideoTargetFinder/FeaturePrintMatcher.swift VideoTargetFinder/VisionObjectTrackingEngine.swift scripts/test_video_pipeline_runtime.swift -o /tmp/video-pipeline-runtime-tests
+          swiftc VideoTargetFinder/ScanPipelineCore.swift VideoTargetFinder/SearchSensitivity.swift VideoTargetFinder/FrameRegionSampler.swift VideoTargetFinder/ReferenceScoreAnalyzer.swift VideoTargetFinder/FeaturePrintMatcher.swift VideoTargetFinder/VisionObjectTrackingEngine.swift VideoTargetFinder/SegmentContinuityAnalyzer.swift scripts/test_video_pipeline_runtime.swift -o /tmp/video-pipeline-runtime-tests
           /tmp/video-pipeline-runtime-tests
 
           swiftc VideoTargetFinder/ScanPipelineCore.swift scripts/test_scan_pipeline_core.swift -o /tmp/scan-pipeline-core-tests
