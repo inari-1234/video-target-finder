@@ -26,6 +26,35 @@ struct ScanPipelineSegmentPlan: Sendable, Equatable {
     let trackingScore: Double
 }
 
+enum ScanPipelineBridgeReason: String, Sendable, Equatable {
+    case missingObservations = "missing-observations"
+    case gapExceedsVisualBridgeLimit = "gap-exceeds-visual-bridge-limit"
+    case insufficientFlankHits = "insufficient-flank-hits"
+    case noInteriorObservations = "no-interior-observations"
+    case insufficientObservationCoverage = "insufficient-observation-coverage"
+    case hardNegativeVeto = "hard-negative-veto"
+    case visualContinuityConfirmed = "visual-continuity-confirmed"
+    case missingHitThreshold = "missing-hit-threshold"
+    case insufficientWeakEvidence = "insufficient-weak-evidence"
+    case midpointEvidenceMissing = "midpoint-evidence-missing"
+    case weakEvidenceConfirmed = "weak-evidence-confirmed"
+}
+
+struct ScanPipelineBridgeDiagnostic: Sendable, Equatable {
+    let leftTime: TimeInterval
+    let rightTime: TimeInterval
+    let gap: TimeInterval
+    let maximumBridgeSpan: TimeInterval
+    let shouldBridge: Bool
+    let reason: ScanPipelineBridgeReason
+    let leftFlankHitCount: Int
+    let rightFlankHitCount: Int
+    let interiorObservationCount: Int
+    let minimumObservedSamples: Int
+    let supportiveSampleCount: Int
+    let minimumSupportiveSamples: Int
+}
+
 enum ScanPipelineCore {
     static func insertDistinct<T>(
         _ candidate: T,
@@ -120,6 +149,9 @@ enum ScanPipelineCore {
         let toleratedMissSpan = toleratedMissSpan(detailInterval: detailInterval)
         let edgePadding = max(0.40, detailInterval * 1.5)
         let sortedObservations = observations.sorted { $0.time < $1.time }
+        let diagnosticStage = confirmedContinuityWindows.isEmpty
+            ? "preliminary"
+            : "visual-confirmed-replay"
 
         var ranges: [Range<Int>] = []
         var groupStart = 0
@@ -127,18 +159,21 @@ enum ScanPipelineCore {
         if hits.count > 1 {
             for index in 1..<hits.count {
                 let gap = hits[index].time - hits[index - 1].time
-                if gap > toleratedMissSpan,
-                   !shouldBridgeTemporaryMiss(
-                       hits: hits,
-                       splitIndex: index,
-                       observations: sortedObservations,
-                       hitThreshold: hitThreshold,
-                       detailInterval: detailInterval,
-                       toleratedMissSpan: toleratedMissSpan,
-                       confirmedContinuityWindows: confirmedContinuityWindows
-                   ) {
-                    ranges.append(groupStart..<index)
-                    groupStart = index
+                if gap > toleratedMissSpan {
+                    let diagnostic = bridgeDiagnostic(
+                        hits: hits,
+                        splitIndex: index,
+                        observations: sortedObservations,
+                        hitThreshold: hitThreshold,
+                        detailInterval: detailInterval,
+                        toleratedMissSpan: toleratedMissSpan,
+                        confirmedContinuityWindows: confirmedContinuityWindows
+                    )
+                    emitBridgeDiagnostic(diagnostic, stage: diagnosticStage)
+                    if !diagnostic.shouldBridge {
+                        ranges.append(groupStart..<index)
+                        groupStart = index
+                    }
                 }
             }
         }
@@ -179,32 +214,72 @@ enum ScanPipelineCore {
         }
     }
 
-    private static func shouldBridgeTemporaryMiss(
+    static func bridgeDiagnostic(
         hits: [ScanPipelinePoint],
         splitIndex: Int,
         observations: [ScanPipelineObservation],
         hitThreshold: Float?,
         detailInterval: TimeInterval,
-        toleratedMissSpan: TimeInterval,
-        confirmedContinuityWindows: [ScanPipelineTimeWindow]
-    ) -> Bool {
-        guard !observations.isEmpty,
-              splitIndex > 0,
-              splitIndex < hits.count else {
-            return false
+        toleratedMissSpan: TimeInterval? = nil,
+        confirmedContinuityWindows: [ScanPipelineTimeWindow] = []
+    ) -> ScanPipelineBridgeDiagnostic {
+        let tolerated = toleratedMissSpan ?? self.toleratedMissSpan(detailInterval: detailInterval)
+        let maximumBridgeSpan = maximumContinuityBridgeSpan(detailInterval: detailInterval)
+
+        guard splitIndex > 0, splitIndex < hits.count else {
+            return ScanPipelineBridgeDiagnostic(
+                leftTime: 0,
+                rightTime: 0,
+                gap: 0,
+                maximumBridgeSpan: maximumBridgeSpan,
+                shouldBridge: false,
+                reason: .missingObservations,
+                leftFlankHitCount: 0,
+                rightFlankHitCount: 0,
+                interiorObservationCount: 0,
+                minimumObservedSamples: 0,
+                supportiveSampleCount: 0,
+                minimumSupportiveSamples: 0
+            )
         }
 
         let leftHit = hits[splitIndex - 1]
         let rightHit = hits[splitIndex]
         let gap = rightHit.time - leftHit.time
-        let maximumBridgeSpan = maximumContinuityBridgeSpan(
-            detailInterval: detailInterval
-        )
-        guard gap <= maximumBridgeSpan else { return false }
 
-        // A bridge is allowed only when both sides already look like a real
-        // continuous appearance. A single isolated hit on either side is not
-        // enough evidence to join two appearances.
+        func result(
+            _ shouldBridge: Bool,
+            _ reason: ScanPipelineBridgeReason,
+            leftFlankHitCount: Int = 0,
+            rightFlankHitCount: Int = 0,
+            interiorObservationCount: Int = 0,
+            minimumObservedSamples: Int = 0,
+            supportiveSampleCount: Int = 0,
+            minimumSupportiveSamples: Int = 0
+        ) -> ScanPipelineBridgeDiagnostic {
+            ScanPipelineBridgeDiagnostic(
+                leftTime: leftHit.time,
+                rightTime: rightHit.time,
+                gap: gap,
+                maximumBridgeSpan: maximumBridgeSpan,
+                shouldBridge: shouldBridge,
+                reason: reason,
+                leftFlankHitCount: leftFlankHitCount,
+                rightFlankHitCount: rightFlankHitCount,
+                interiorObservationCount: interiorObservationCount,
+                minimumObservedSamples: minimumObservedSamples,
+                supportiveSampleCount: supportiveSampleCount,
+                minimumSupportiveSamples: minimumSupportiveSamples
+            )
+        }
+
+        guard !observations.isEmpty else {
+            return result(false, .missingObservations)
+        }
+        guard gap > tolerated, gap <= maximumBridgeSpan else {
+            return result(false, .gapExceedsVisualBridgeLimit)
+        }
+
         let flankWindow = max(0.75, detailInterval * 4.0)
         let leftFlankHitCount = hits[..<splitIndex].reduce(into: 0) { count, hit in
             if hit.time >= leftHit.time - flankWindow {
@@ -217,7 +292,12 @@ enum ScanPipelineCore {
             }
         }
         guard leftFlankHitCount >= 2, rightFlankHitCount >= 2 else {
-            return false
+            return result(
+                false,
+                .insufficientFlankHits,
+                leftFlankHitCount: leftFlankHitCount,
+                rightFlankHitCount: rightFlankHitCount
+            )
         }
 
         let epsilon = max(0.001, detailInterval * 0.10)
@@ -225,10 +305,15 @@ enum ScanPipelineCore {
             $0.time > leftHit.time + epsilon &&
             $0.time < rightHit.time - epsilon
         }
-        guard !interior.isEmpty else { return false }
+        guard !interior.isEmpty else {
+            return result(
+                false,
+                .noInteriorObservations,
+                leftFlankHitCount: leftFlankHitCount,
+                rightFlankHitCount: rightFlankHitCount
+            )
+        }
 
-        // Do not bridge across a region that was mostly not sampled. This keeps
-        // decode failures or missing evidence from being mistaken for continuity.
         let expectedInteriorSamples = max(
             1,
             Int((gap / detailInterval).rounded(.down)) - 1
@@ -237,29 +322,54 @@ enum ScanPipelineCore {
             1,
             Int(ceil(Double(expectedInteriorSamples) * 0.60))
         )
-        guard interior.count >= minimumObservedSamples else { return false }
-
-        // Existing hard-negative decisions are a veto. We do not change their
-        // semantics; segmentation only consumes the already-computed result.
-        guard !interior.contains(where: { $0.rejectedByNegative }) else {
-            return false
+        guard interior.count >= minimumObservedSamples else {
+            return result(
+                false,
+                .insufficientObservationCoverage,
+                leftFlankHitCount: leftFlankHitCount,
+                rightFlankHitCount: rightFlankHitCount,
+                interiorObservationCount: interior.count,
+                minimumObservedSamples: minimumObservedSamples
+            )
         }
 
-        // A separately confirmed visual-continuity result can bridge a complete
-        // Feature Print dropout. This does not alter recognition thresholds.
+        guard !interior.contains(where: { $0.rejectedByNegative }) else {
+            return result(
+                false,
+                .hardNegativeVeto,
+                leftFlankHitCount: leftFlankHitCount,
+                rightFlankHitCount: rightFlankHitCount,
+                interiorObservationCount: interior.count,
+                minimumObservedSamples: minimumObservedSamples
+            )
+        }
+
         let continuityConfirmed = confirmedContinuityWindows.contains { window in
             window.start <= leftHit.time + epsilon &&
             window.end >= rightHit.time - epsilon
         }
         if continuityConfirmed {
-            return true
+            return result(
+                true,
+                .visualContinuityConfirmed,
+                leftFlankHitCount: leftFlankHitCount,
+                rightFlankHitCount: rightFlankHitCount,
+                interiorObservationCount: interior.count,
+                minimumObservedSamples: minimumObservedSamples
+            )
         }
 
-        guard let hitThreshold else { return false }
+        guard let hitThreshold else {
+            return result(
+                false,
+                .missingHitThreshold,
+                leftFlankHitCount: leftFlankHitCount,
+                rightFlankHitCount: rightFlankHitCount,
+                interiorObservationCount: interior.count,
+                minimumObservedSamples: minimumObservedSamples
+            )
+        }
 
-        // Otherwise, a temporary miss must still retain near-threshold Feature
-        // Print evidence. These samples do not become hits and do not change the
-        // recognition threshold; they are bridge-only evidence.
         let bridgeEvidenceThreshold =
             hitThreshold + max(0.015, hitThreshold * 0.08)
         let supportiveSamples = interior.filter {
@@ -272,16 +382,79 @@ enum ScanPipelineCore {
             Int(ceil(Double(interior.count) * 0.50))
         )
         guard supportiveSamples.count >= minimumSupportiveSamples else {
-            return false
+            return result(
+                false,
+                .insufficientWeakEvidence,
+                leftFlankHitCount: leftFlankHitCount,
+                rightFlankHitCount: rightFlankHitCount,
+                interiorObservationCount: interior.count,
+                minimumObservedSamples: minimumObservedSamples,
+                supportiveSampleCount: supportiveSamples.count,
+                minimumSupportiveSamples: minimumSupportiveSamples
+            )
         }
 
-        // Require evidence near the middle of the gap as well, so two strong
-        // appearances separated by a genuinely absent middle are not merged
-        // merely because the timestamps are close.
         let midpoint = (leftHit.time + rightHit.time) / 2.0
         let midpointWindow = max(0.35, detailInterval * 1.5)
-        return supportiveSamples.contains {
+        let hasMidpointEvidence = supportiveSamples.contains {
             abs($0.time - midpoint) <= midpointWindow
         }
+        guard hasMidpointEvidence else {
+            return result(
+                false,
+                .midpointEvidenceMissing,
+                leftFlankHitCount: leftFlankHitCount,
+                rightFlankHitCount: rightFlankHitCount,
+                interiorObservationCount: interior.count,
+                minimumObservedSamples: minimumObservedSamples,
+                supportiveSampleCount: supportiveSamples.count,
+                minimumSupportiveSamples: minimumSupportiveSamples
+            )
+        }
+
+        return result(
+            true,
+            .weakEvidenceConfirmed,
+            leftFlankHitCount: leftFlankHitCount,
+            rightFlankHitCount: rightFlankHitCount,
+            interiorObservationCount: interior.count,
+            minimumObservedSamples: minimumObservedSamples,
+            supportiveSampleCount: supportiveSamples.count,
+            minimumSupportiveSamples: minimumSupportiveSamples
+        )
+    }
+
+    private static func emitBridgeDiagnostic(
+        _ diagnostic: ScanPipelineBridgeDiagnostic,
+        stage: String
+    ) {
+        #if canImport(UIKit)
+        let decision = diagnostic.shouldBridge ? "bridge" : "split"
+        let message = String(
+            format: "Segment bridge diagnostic: stage=%@ %.3f -> %.3f gap=%.3fs max=%.3fs decision=%@ reason=%@ flank=%d/%d interior=%d(min=%d) supportive=%d(min=%d)",
+            stage,
+            diagnostic.leftTime,
+            diagnostic.rightTime,
+            diagnostic.gap,
+            diagnostic.maximumBridgeSpan,
+            decision,
+            diagnostic.reason.rawValue,
+            diagnostic.leftFlankHitCount,
+            diagnostic.rightFlankHitCount,
+            diagnostic.interiorObservationCount,
+            diagnostic.minimumObservedSamples,
+            diagnostic.supportiveSampleCount,
+            diagnostic.minimumSupportiveSamples
+        )
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                DiagnosticLogger.log(message)
+            }
+        } else {
+            Task { @MainActor in
+                DiagnosticLogger.log(message)
+            }
+        }
+        #endif
     }
 }
