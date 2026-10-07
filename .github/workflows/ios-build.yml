@@ -70,6 +70,12 @@ jobs:
           swiftc VideoTargetFinder/ScanPipelineCore.swift scripts/test_scan_pipeline_core.swift -o /tmp/scan-pipeline-core-tests
           /tmp/scan-pipeline-core-tests
 
+          swiftc VideoTargetFinder/ScanPipelineCore.swift scripts/test_segment_bridge_diagnostics.swift -o /tmp/segment-bridge-diagnostic-tests
+          /tmp/segment-bridge-diagnostic-tests
+
+          swiftc VideoTargetFinder/VisionObjectTrackingEngine.swift VideoTargetFinder/SegmentContinuityAnalyzer.swift scripts/test_segment_visual_continuity_diagnostics.swift -o /tmp/segment-visual-continuity-diagnostic-tests
+          /tmp/segment-visual-continuity-diagnostic-tests
+
       - name: Install XcodeGen
         run: brew install xcodegen
 
