@@ -110,6 +110,10 @@ private func makeSyntheticVFRVideo(at url: URL) async throws -> [CMTime] {
     return times
 }
 
+private func containsExactPTS(_ frames: [BestShotFramePTS], _ target: CMTime) -> Bool {
+    frames.contains { CMTimeCompare($0.time, target) == 0 }
+}
+
 @main
 struct BestShotFrameAuthorityRuntimeTest {
     static func main() async throws {
@@ -117,32 +121,44 @@ struct BestShotFrameAuthorityRuntimeTest {
             .appendingPathComponent("best-shot-frame-authority-\(UUID().uuidString).mov")
         defer { try? FileManager.default.removeItem(at: url) }
 
-        let sourceTimes = try await makeSyntheticVFRVideo(at: url)
+        let writerInputTimes = try await makeSyntheticVFRVideo(at: url)
         let asset = AVURLAsset(url: url)
         let index = try await BestShotFrameAuthority.makeIndex(for: asset)
 
-        try expect(index.frameCount == sourceTimes.count, "PTS index count mismatch: \(index.frameCount) vs \(sourceTimes.count)")
+        // The encoded H.264 file itself is authoritative. An encoder may expose a
+        // different sample count from the number of pixel buffers submitted to it.
+        try expect(index.frameCount >= writerInputTimes.count, "Encoded file lost writer input PTS samples")
         try expect(index.isVariableFrameRate, "Irregular PTS sequence must be recognized as variable timing")
 
-        for (ordinal, expectedTime) in sourceTimes.enumerated() {
-            let indexed = try index.frame(at: ordinal)
-            try expect(CMTimeCompare(indexed.time, expectedTime) == 0, "Indexed PTS mismatch at ordinal \(ordinal)")
+        for sourcePTS in writerInputTimes {
+            try expect(
+                containsExactPTS(index.frames, sourcePTS),
+                "Writer input PTS missing from encoded presentation index: \(CMTimeGetSeconds(sourcePTS))"
+            )
         }
 
-        for ordinal in [0, 2, sourceTimes.count - 1] {
+        for ordinal in 1..<index.frameCount {
+            let previous = try index.frame(at: ordinal - 1).time
+            let current = try index.frame(at: ordinal).time
+            try expect(CMTimeCompare(previous, current) < 0, "Authority PTS must be strictly increasing at ordinal \(ordinal)")
+        }
+
+        // Every PTS admitted into the authority index must decode back to exactly
+        // the same presentation timestamp. No nearest-frame substitution is allowed.
+        for ordinal in index.frames.indices {
             let decoded = try await BestShotFrameAuthority.decodeExactFrame(
                 from: asset,
                 index: index,
                 ordinal: ordinal
             )
-            try expect(decoded.isExactPTSMatch, "Exact decode mismatch at ordinal \(ordinal)")
+            try expect(decoded.isExactPTSMatch, "Exact decode mismatch at authority ordinal \(ordinal)")
             try expect(CVPixelBufferGetWidth(decoded.pixelBuffer) == 64, "Decoded width mismatch")
             try expect(CVPixelBufferGetHeight(decoded.pixelBuffer) == 64, "Decoded height mismatch")
         }
 
         let constantTimes = [0, 20, 40, 60, 80].map { CMTime(value: CMTimeValue($0), timescale: 600) }
         try expect(!BestShotFrameAuthority.timingIsVariable(constantTimes), "Constant PTS timing incorrectly marked variable")
-        try expect(BestShotFrameAuthority.timingIsVariable(sourceTimes), "Variable PTS timing not detected")
+        try expect(BestShotFrameAuthority.timingIsVariable(writerInputTimes), "Variable PTS timing not detected")
         try expect(
             BestShotFrameAuthority.preferredPixelFormat(for: .hlg) == kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange,
             "HLG must request a 10-bit decode surface"
@@ -152,7 +168,8 @@ struct BestShotFrameAuthorityRuntimeTest {
             "SDR must request an 8-bit decode surface"
         )
 
+        let ptsText = index.frames.map { String(format: "%.6f", $0.seconds) }.joined(separator: ",")
         print("Best-shot PTS authority runtime test: PASS")
-        print("frames=\(index.frameCount), vfr=\(index.isVariableFrameRate), dynamicRange=\(index.sourceDynamicRange.rawValue)")
+        print("frames=\(index.frameCount), vfr=\(index.isVariableFrameRate), dynamicRange=\(index.sourceDynamicRange.rawValue), pts=[\(ptsText)]")
     }
 }
