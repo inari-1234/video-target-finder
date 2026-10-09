@@ -6,6 +6,9 @@ on:
       - main
       - video-target-finder-candidate
 
+permissions:
+  contents: write
+
 concurrency:
   group: video-target-finder-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -32,6 +35,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Apply DIAG-2 runtime patch
+        run: |
+          python3 scripts/apply_diag2_runtime_patch.py
 
       - name: Show environment
         run: |
@@ -73,6 +80,12 @@ jobs:
           swiftc VideoTargetFinder/ScanPipelineCore.swift scripts/test_segment_bridge_diagnostics.swift -o /tmp/segment-bridge-diagnostic-tests
           /tmp/segment-bridge-diagnostic-tests
 
+          swiftc VideoTargetFinder/ScanPipelineCore.swift VideoTargetFinder/SegmentBridgeShadowDiagnostics.swift scripts/test_diag2_shadow_bridge.swift -o /tmp/diag2-shadow-bridge-tests
+          /tmp/diag2-shadow-bridge-tests
+
+          swiftc VideoTargetFinder/SegmentFeedbackMergeDiagnostics.swift scripts/test_diag2_rescan_merge.swift -o /tmp/diag2-rescan-merge-tests
+          /tmp/diag2-rescan-merge-tests
+
           swiftc VideoTargetFinder/VisionObjectTrackingEngine.swift VideoTargetFinder/SegmentContinuityAnalyzer.swift scripts/test_segment_visual_continuity_diagnostics.swift -o /tmp/segment-visual-continuity-diagnostic-tests
           /tmp/segment-visual-continuity-diagnostic-tests
 
@@ -101,18 +114,18 @@ jobs:
 
       - name: Package sideload IPA
         run: |
-          ./scripts/package_unsigned_ipa.sh             "$PWD/build-device/Build/Products/Release-iphoneos/VideoTargetFinder.app"             VideoTargetFinder-v0.32.0-build34-sideload.ipa
+          ./scripts/package_unsigned_ipa.sh             "$PWD/build-device/Build/Products/Release-iphoneos/VideoTargetFinder.app"             VideoTargetFinder-v0.32.0-build35-sideload.ipa
 
       - name: Verify IPA
         run: |
           rm -rf verify-ipa
           mkdir verify-ipa
           cd verify-ipa
-          unzip -q ../VideoTargetFinder-v0.32.0-build34-sideload.ipa
+          unzip -q ../VideoTargetFinder-v0.32.0-build35-sideload.ipa
           APP=Payload/VideoTargetFinder.app
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")" = "jp.inari1234.videotargetfinder"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = "0.32.0"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "34"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "35"
           test "$(/usr/libexec/PlistBuddy -c 'Print :UIFileSharingEnabled' "$APP/Info.plist")" = "true"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "$APP/Info.plist")" = "true"
           file "$APP/VideoTargetFinder" | grep -q arm64
@@ -121,17 +134,30 @@ jobs:
       - name: Upload sideload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: VideoTargetFinder-v0.32.0-build34-sideload-ipa
-          path: VideoTargetFinder-v0.32.0-build34-sideload.ipa
+          name: VideoTargetFinder-v0.32.0-build35-sideload-ipa
+          path: VideoTargetFinder-v0.32.0-build35-sideload.ipa
           retention-days: 14
 
       - name: Upload Xcode logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: VideoTargetFinder-v0.32.0-build34-xcode-logs
+          name: VideoTargetFinder-v0.32.0-build35-xcode-logs
           path: |
             xcodebuild-simulator.log
             xcodebuild-device.log
           if-no-files-found: ignore
           retention-days: 14
+
+      - name: Persist qualified DIAG-2 runtime patch
+        if: success() && github.ref_name == 'video-target-finder-candidate'
+        run: |
+          if git diff --quiet -- VideoTargetFinder/VideoAnalysisViewModel.swift project.yml scripts/verify_source.py; then
+            echo "DIAG-2 runtime patch already persisted"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add VideoTargetFinder/VideoAnalysisViewModel.swift project.yml scripts/verify_source.py
+          git commit -m "diag2: instrument shadow bridge and rescan diagnostics [full-ci]"
+          git push origin HEAD:video-target-finder-candidate
