@@ -26,21 +26,31 @@ assert 'static let frameAuthorityDiagnosticsEnabled = false' in authority, 'B0-A
 assert 'BestShotFrameAuthority' not in content, 'B0-A must not enter the normal UI before its gate passes'
 assert 'BestShotFrameAuthority' not in view_model, 'B0-A must not alter production recognition pipeline'
 
-# PTS index is the single navigation authority.
+# PTS index is the single navigation authority. Encoded samples are read in decode order,
+# filtered to displayable media payload, associated with sync anchors, then presentation-sorted.
 assert 'AVAssetReaderTrackOutput(track: track, outputSettings: nil)' in authority, 'Compressed-sample PTS enumeration missing'
-assert 'rawPTS.sort { CMTimeCompare($0, $1) < 0 }' in authority, 'PTS list must be presentation-time sorted'
-assert 'CMTimeCompare(previous, pts) == 0' in authority, 'Duplicate PTS removal missing'
-assert 'let frames = uniquePTS.map(BestShotFramePTS.init)' in authority, 'Sorted unique PTS must feed the frame index'
-assert 'isVariableFrameRate: timingIsVariable(uniquePTS)' in authority, 'VFR timing diagnosis missing'
+assert 'CMSampleBufferGetNumSamples(sample) > 0' in authority, 'Timing-only sample filter missing'
+assert 'CMSampleBufferGetTotalSampleSize(sample) > 0' in authority, 'Zero-payload sample filter missing'
+assert 'kCMSampleAttachmentKey_DoNotDisplay' in authority, 'Non-display sample filter missing'
+assert 'kCMSampleAttachmentKey_NotSync' in authority, 'Sync-sample detection missing'
+assert 'currentSyncPTS = pts' in authority, 'Decode anchor update missing'
+assert 'records.sort { CMTimeCompare($0.pts, $1.pts) < 0 }' in authority, 'PTS list must be presentation-time sorted'
+assert 'CMTimeCompare(previous.pts, record.pts) == 0' in authority, 'Duplicate PTS removal missing'
+assert 'let frames = presentationTimes.map(BestShotFramePTS.init)' in authority, 'Sorted unique PTS must feed the frame index'
+assert 'decodeStartPTS: decodeStarts' in authority, 'Sync decode anchors must be retained with the index'
+assert 'isVariableFrameRate: timingIsVariable(presentationTimes)' in authority, 'VFR timing diagnosis missing'
 
-# Exact-frame decode must never silently snap to a neighboring frame.
+# Exact-frame decode starts from a sync anchor and must never silently snap.
+assert 'let decodeAnchor = try index.decodeStart(at: ordinal)' in authority, 'Exact decode must use the stored sync anchor'
+assert 'reader.timeRange = CMTimeRange(start: startTime, duration: duration)' in authority, 'Sync-anchored decode range missing'
 assert 'CMTimeCompare(actualTime, targetTime) == 0' in authority, 'Exact PTS equality gate missing'
+assert 'CMTimeCompare(actualTime, targetTime) > 0' in authority, 'Presentation-order overshoot guard missing'
 assert 'exactFrameNotFound' in authority, 'Neighbor-frame fallback must fail explicitly'
 assert 'kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange' in authority, 'HDR 10-bit decode surface missing'
 assert 'kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange' in authority, 'SDR 8-bit decode surface missing'
 
-# Synthetic VFR regression must treat the encoded file PTS set as authority,
-# then prove every admitted PTS decodes back to exactly itself.
+# Synthetic VFR regression treats the encoded file PTS set as authority and proves every
+# admitted PTS decodes back to exactly itself.
 assert 'Best-shot PTS authority runtime test: PASS' in test, 'B0-A runtime PASS marker missing'
 assert 'Deliberately irregular presentation intervals' in test, 'Synthetic VFR source missing'
 assert 'containsExactPTS(index.frames, sourcePTS)' in test, 'Writer PTS membership regression missing'
