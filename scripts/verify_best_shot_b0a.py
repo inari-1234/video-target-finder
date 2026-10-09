@@ -39,10 +39,13 @@ assert 'exactFrameNotFound' in authority, 'Neighbor-frame fallback must fail exp
 assert 'kCVPixelFormatType_420YpCbCr10BiPlanarVideoRange' in authority, 'HDR 10-bit decode surface missing'
 assert 'kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange' in authority, 'SDR 8-bit decode surface missing'
 
-# Synthetic VFR regression must exercise every indexed PTS and exact decoding.
+# Synthetic VFR regression must treat the encoded file PTS set as authority,
+# then prove every admitted PTS decodes back to exactly itself.
 assert 'Best-shot PTS authority runtime test: PASS' in test, 'B0-A runtime PASS marker missing'
 assert 'Deliberately irregular presentation intervals' in test, 'Synthetic VFR source missing'
-assert 'CMTimeCompare(indexed.time, expectedTime) == 0' in test, 'PTS index equality test missing'
+assert 'containsExactPTS(index.frames, sourcePTS)' in test, 'Writer PTS membership regression missing'
+assert 'CMTimeCompare(previous, current) < 0' in test, 'Strictly increasing authority PTS regression missing'
+assert 'for ordinal in index.frames.indices' in test, 'Runtime test must decode every authoritative PTS'
 assert 'decoded.isExactPTSMatch' in test, 'Exact decode equality test missing'
 assert 'best-shot-b0a' in workflow, 'B0-A branch is not CI-enabled'
 assert 'test_best_shot_frame_authority.swift' in workflow, 'B0-A runtime test is not wired into CI'
