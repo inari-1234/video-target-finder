@@ -6,9 +6,6 @@ on:
       - main
       - video-target-finder-candidate
 
-permissions:
-  contents: write
-
 concurrency:
   group: video-target-finder-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -35,10 +32,6 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-
-      - name: Apply DIAG-2 runtime patch
-        run: |
-          python3 scripts/apply_diag2_runtime_patch.py
 
       - name: Show environment
         run: |
@@ -148,16 +141,3 @@ jobs:
             xcodebuild-device.log
           if-no-files-found: ignore
           retention-days: 14
-
-      - name: Persist qualified DIAG-2 runtime patch
-        if: success() && github.ref_name == 'video-target-finder-candidate'
-        run: |
-          if git diff --quiet -- VideoTargetFinder/VideoAnalysisViewModel.swift project.yml scripts/verify_source.py; then
-            echo "DIAG-2 runtime patch already persisted"
-            exit 0
-          fi
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add VideoTargetFinder/VideoAnalysisViewModel.swift project.yml scripts/verify_source.py
-          git commit -m "diag2: instrument shadow bridge and rescan diagnostics [full-ci]"
-          git push origin HEAD:video-target-finder-candidate
