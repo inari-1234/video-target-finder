@@ -37,6 +37,9 @@ struct BestShotFramePTS: Hashable, Codable, Sendable {
 struct BestShotFrameIndex: @unchecked Sendable {
     let trackID: CMPersistentTrackID
     let frames: [BestShotFramePTS]
+    /// Each presentation frame's nearest preceding sync sample in decode order.
+    /// This is deliberately parallel to `frames` so B1/B2 navigation remains PTS-based.
+    let decodeStartPTS: [BestShotFramePTS]
     let nominalFrameRate: Float
     let naturalSize: CGSize
     let preferredTransform: CGAffineTransform
@@ -50,6 +53,13 @@ struct BestShotFrameIndex: @unchecked Sendable {
             throw BestShotFrameAuthorityError.ordinalOutOfRange(ordinal)
         }
         return frames[ordinal]
+    }
+
+    func decodeStart(at ordinal: Int) throws -> BestShotFramePTS {
+        guard decodeStartPTS.indices.contains(ordinal) else {
+            throw BestShotFrameAuthorityError.ordinalOutOfRange(ordinal)
+        }
+        return decodeStartPTS[ordinal]
     }
 }
 
@@ -98,17 +108,26 @@ enum BestShotFrameAuthorityError: Error, LocalizedError {
     }
 }
 
+private struct BestShotCompressedFrameRecord {
+    let pts: CMTime
+    let decodeStartPTS: CMTime
+}
+
 /// Best-shot B0-A authority.
 ///
-/// - Presentation timestamps are collected from compressed samples with AVAssetReader.
-/// - The sorted unique PTS list is the only frame-navigation authority for B1/B2.
-/// - Decoding must return the exact requested PTS; silent snapping to a neighboring frame is forbidden.
+/// - Compressed samples are read in decode order without pixel decoding.
+/// - Only displayable samples with encoded payload enter the presentation PTS authority.
+/// - Each frame retains the nearest preceding sync sample as its decode anchor.
+/// - The sorted unique PTS list remains the only frame-navigation authority for B1/B2.
+/// - Decoding starts at the sync anchor and must return the exact requested PTS;
+///   silent snapping to a neighboring frame is forbidden.
 /// - HDR sources request a 10-bit YCbCr pixel buffer so B1 can preserve HDR without first forcing SDR.
 final class BestShotFrameAuthority {
     static func makeIndex(for asset: AVAsset) async throws -> BestShotFrameIndex {
         guard let track = try await asset.loadTracks(withMediaType: .video).first else {
             throw BestShotFrameAuthorityError.noVideoTrack
         }
+        let trackTimeRange = try await track.load(.timeRange)
 
         let reader = try AVAssetReader(asset: asset)
         let output = AVAssetReaderTrackOutput(track: track, outputSettings: nil)
@@ -122,30 +141,45 @@ final class BestShotFrameAuthority {
             throw BestShotFrameAuthorityError.readerStartFailed(reader.error?.localizedDescription ?? "unknown")
         }
 
-        var rawPTS: [CMTime] = []
-        rawPTS.reserveCapacity(2_000)
+        var records: [BestShotCompressedFrameRecord] = []
+        records.reserveCapacity(2_000)
+        var currentSyncPTS: CMTime?
+
         while let sample = output.copyNextSampleBuffer() {
-            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
-            if pts.isValid && pts.isNumeric {
-                rawPTS.append(pts)
+            // Encoders/readers can surface timing-only buffers. They are not still-image frames.
+            guard CMSampleBufferGetNumSamples(sample) > 0,
+                  CMSampleBufferGetTotalSampleSize(sample) > 0,
+                  !sampleAttachmentBool(sample, key: kCMSampleAttachmentKey_DoNotDisplay) else {
+                continue
             }
+
+            let pts = CMSampleBufferGetPresentationTimeStamp(sample)
+            guard pts.isValid && pts.isNumeric else { continue }
+
+            // nil outputSettings returns encoded samples in decode order. Preserve that order
+            // long enough to associate each frame with the most recent independent sync sample.
+            if !sampleAttachmentBool(sample, key: kCMSampleAttachmentKey_NotSync) {
+                currentSyncPTS = pts
+            }
+            let decodeStart = currentSyncPTS ?? trackTimeRange.start
+            records.append(BestShotCompressedFrameRecord(pts: pts, decodeStartPTS: decodeStart))
         }
 
         if reader.status == .failed {
             throw BestShotFrameAuthorityError.readerFailed(reader.error?.localizedDescription ?? "unknown")
         }
 
-        rawPTS.sort { CMTimeCompare($0, $1) < 0 }
-        var uniquePTS: [CMTime] = []
-        uniquePTS.reserveCapacity(rawPTS.count)
-        for pts in rawPTS {
-            if let previous = uniquePTS.last, CMTimeCompare(previous, pts) == 0 {
+        records.sort { CMTimeCompare($0.pts, $1.pts) < 0 }
+        var uniqueRecords: [BestShotCompressedFrameRecord] = []
+        uniqueRecords.reserveCapacity(records.count)
+        for record in records {
+            if let previous = uniqueRecords.last, CMTimeCompare(previous.pts, record.pts) == 0 {
                 continue
             }
-            uniquePTS.append(pts)
+            uniqueRecords.append(record)
         }
 
-        guard !uniquePTS.isEmpty else {
+        guard !uniqueRecords.isEmpty else {
             throw BestShotFrameAuthorityError.emptyPresentationIndex
         }
 
@@ -154,17 +188,20 @@ final class BestShotFrameAuthority {
         async let preferredTransform = track.load(.preferredTransform)
         async let formatDescriptions = track.load(.formatDescriptions)
 
-        let frames = uniquePTS.map(BestShotFramePTS.init)
+        let presentationTimes = uniqueRecords.map(\.pts)
+        let frames = presentationTimes.map(BestShotFramePTS.init)
+        let decodeStarts = uniqueRecords.map { BestShotFramePTS($0.decodeStartPTS) }
         let dynamicRange = dynamicRange(from: try await formatDescriptions)
 
         return BestShotFrameIndex(
             trackID: track.trackID,
             frames: frames,
+            decodeStartPTS: decodeStarts,
             nominalFrameRate: try await nominalFrameRate,
             naturalSize: try await naturalSize,
             preferredTransform: try await preferredTransform,
             sourceDynamicRange: dynamicRange,
-            isVariableFrameRate: timingIsVariable(uniquePTS)
+            isVariableFrameRate: timingIsVariable(presentationTimes)
         )
     }
 
@@ -174,6 +211,7 @@ final class BestShotFrameAuthority {
         ordinal: Int
     ) async throws -> BestShotDecodedFrame {
         let expected = try index.frame(at: ordinal)
+        let decodeAnchor = try index.decodeStart(at: ordinal)
         guard let track = try await asset.loadTracks(withMediaType: .video)
             .first(where: { $0.trackID == index.trackID }) else {
             throw BestShotFrameAuthorityError.noVideoTrack
@@ -192,15 +230,23 @@ final class BestShotFrameAuthority {
         reader.add(output)
 
         let targetTime = expected.time
-        let duration: CMTime
-        if ordinal + 1 < index.frames.count {
-            let next = index.frames[ordinal + 1].time
-            let interval = CMTimeSubtract(next, targetTime)
-            duration = CMTimeMaximum(interval, CMTime(value: 1, timescale: max(1, targetTime.timescale)))
-        } else {
-            duration = CMTime(seconds: 1.0, preferredTimescale: max(600, targetTime.timescale))
+        let assetDuration = try await asset.load(.duration)
+        var startTime = decodeAnchor.time
+        if CMTimeCompare(startTime, targetTime) > 0 {
+            // Defensive fallback for unusual reordered streams: never start after the target PTS.
+            startTime = try await track.load(.timeRange).start
         }
-        reader.timeRange = CMTimeRange(start: targetTime, duration: duration)
+
+        let endTime: CMTime
+        if ordinal + 1 < index.frames.count {
+            endTime = index.frames[ordinal + 1].time
+        } else {
+            endTime = assetDuration
+        }
+        let rawDuration = CMTimeSubtract(endTime, startTime)
+        let minimumDuration = CMTime(seconds: 1.0, preferredTimescale: max(600, targetTime.timescale))
+        let duration = CMTimeCompare(rawDuration, .zero) > 0 ? rawDuration : minimumDuration
+        reader.timeRange = CMTimeRange(start: startTime, duration: duration)
 
         guard reader.startReading() else {
             throw BestShotFrameAuthorityError.readerStartFailed(reader.error?.localizedDescription ?? "unknown")
@@ -219,16 +265,23 @@ final class BestShotFrameAuthority {
                 nearestDelta = delta
             }
 
-            guard CMTimeCompare(actualTime, targetTime) == 0 else { continue }
-            guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else {
-                throw BestShotFrameAuthorityError.missingPixelBuffer
+            if CMTimeCompare(actualTime, targetTime) == 0 {
+                guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else {
+                    throw BestShotFrameAuthorityError.missingPixelBuffer
+                }
+                return BestShotDecodedFrame(
+                    expectedPTS: expected,
+                    actualPTS: actual,
+                    pixelBuffer: pixelBuffer,
+                    pixelFormat: CVPixelBufferGetPixelFormatType(pixelBuffer)
+                )
             }
-            return BestShotDecodedFrame(
-                expectedPTS: expected,
-                actualPTS: actual,
-                pixelBuffer: pixelBuffer,
-                pixelFormat: CVPixelBufferGetPixelFormatType(pixelBuffer)
-            )
+
+            // Decoded AVAssetReader output is in presentation order. Once it has passed
+            // the target, that exact frame cannot appear later in this read.
+            if CMTimeCompare(actualTime, targetTime) > 0 {
+                break
+            }
         }
 
         if reader.status == .failed {
@@ -257,6 +310,20 @@ final class BestShotFrameAuthority {
         let median = sorted[sorted.count / 2]
         let tolerance = max(0.0005, median * 0.02)
         return intervals.contains { abs($0 - median) > tolerance }
+    }
+
+    private static func sampleAttachmentBool(_ sample: CMSampleBuffer, key: CFString) -> Bool {
+        guard let attachments = CMSampleBufferGetSampleAttachmentsArray(
+            sample,
+            createIfNecessary: false
+        ) as? [NSDictionary],
+        let first = attachments.first else {
+            return false
+        }
+        if let value = first[key] as? NSNumber {
+            return value.boolValue
+        }
+        return false
     }
 
     private static func dynamicRange(from descriptions: [CMFormatDescription]) -> BestShotDynamicRange {
