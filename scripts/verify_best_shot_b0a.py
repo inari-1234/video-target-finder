@@ -8,9 +8,14 @@ workflow_path = root / '.github' / 'workflows' / 'ios-build.yml'
 project_path = root / 'project.yml'
 content_path = root / 'VideoTargetFinder' / 'ContentView.swift'
 view_model_path = root / 'VideoTargetFinder' / 'VideoAnalysisViewModel.swift'
+app_path = root / 'VideoTargetFinder' / 'VideoTargetFinderApp.swift'
+launcher_path = root / 'VideoTargetFinder' / 'BestShotB0ADiagnosticLauncher.swift'
+diagnostic_view_path = root / 'VideoTargetFinder' / 'BestShotB0ADiagnosticsView.swift'
 
 assert authority_path.exists(), 'B0-A frame authority source missing'
 assert test_path.exists(), 'B0-A runtime test missing'
+assert launcher_path.exists(), 'B0-A diagnostic launcher missing'
+assert diagnostic_view_path.exists(), 'B0-A real-device diagnostic view missing'
 
 authority = authority_path.read_text(encoding='utf-8')
 test = test_path.read_text(encoding='utf-8')
@@ -18,13 +23,29 @@ workflow = workflow_path.read_text(encoding='utf-8')
 project = project_path.read_text(encoding='utf-8')
 content = content_path.read_text(encoding='utf-8')
 view_model = view_model_path.read_text(encoding='utf-8')
+app = app_path.read_text(encoding='utf-8')
+launcher = launcher_path.read_text(encoding='utf-8')
+diagnostic_view = diagnostic_view_path.read_text(encoding='utf-8')
 
 # A-Freeze remains the production authority while B0-A is diagnostic-only.
 assert 'MARKETING_VERSION: 0.32.0' in project, 'B0-A must not advance production marketing version yet'
 assert 'CURRENT_PROJECT_VERSION: 35' in project, 'B0-A must remain pinned to A-Freeze Build35 until real-device gate'
-assert 'static let frameAuthorityDiagnosticsEnabled = false' in authority, 'B0-A feature flag must default OFF'
-assert 'BestShotFrameAuthority' not in content, 'B0-A must not enter the normal UI before its gate passes'
+assert 'static let frameAuthorityDiagnosticsEnabled = false' in authority, 'B0-A runtime feature flag must default OFF'
+assert 'BestShotFrameAuthority' not in content, 'B0-A must not enter the normal five-step ContentView flow'
 assert 'BestShotFrameAuthority' not in view_model, 'B0-A must not alter production recognition pipeline'
+
+# Real-device diagnostics exist only in the B0-A diagnostic build condition.
+assert 'BEST_SHOT_B0A_DIAGNOSTICS' in project, 'B0-A diagnostic compile condition missing'
+assert '#if BEST_SHOT_B0A_DIAGNOSTICS' in app, 'App diagnostic launcher must be compile-guarded'
+assert 'BestShotB0ADiagnosticLauncher(asset: viewModel.videoAsset)' in app, 'Diagnostic launcher is not connected to the selected video'
+assert '#if BEST_SHOT_B0A_DIAGNOSTICS' in launcher, 'Launcher source must be compile-guarded'
+assert 'BestShotB0ADiagnosticsView(asset: asset)' in launcher, 'Launcher must open the isolated diagnostic view'
+assert 'BestShotFrameAuthority.makeIndex(for: asset)' in diagnostic_view, 'Real-device diagnostic must build the PTS authority index'
+assert 'BestShotFrameAuthority.decodeExactFrame(' in diagnostic_view, 'Real-device diagnostic must exact-decode sampled frames'
+assert 'sampleOrdinals(frameCount:' in diagnostic_view, 'Representative PTS sampling missing'
+assert 'Current-video gate:' in diagnostic_view, 'Per-video gate disclosure missing'
+assert 'B0-A overall PASS requires representative SDR/VFR/HDR/portrait/Photos-edited source coverage' in diagnostic_view, 'Overall PASS limitation disclosure missing'
+assert '診断結果をコピー' in diagnostic_view, 'Real-device diagnostic copy action missing'
 
 # PTS index is the single navigation authority. Encoded samples are read in decode order,
 # filtered to displayable media payload, associated with sync anchors, then presentation-sorted.
