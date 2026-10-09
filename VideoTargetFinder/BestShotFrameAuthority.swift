@@ -262,7 +262,10 @@ final class BestShotFrameAuthority {
     private static func dynamicRange(from descriptions: [CMFormatDescription]) -> BestShotDynamicRange {
         var sawKnownSDR = false
         for description in descriptions {
-            let extensions = CMFormatDescriptionGetExtensions(description) as NSDictionary
+            guard let rawExtensions = CMFormatDescriptionGetExtensions(description) else {
+                continue
+            }
+            let extensions = rawExtensions as NSDictionary
             guard let transfer = extensions[kCVImageBufferTransferFunctionKey as String] as? String else {
                 continue
             }
