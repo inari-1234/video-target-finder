@@ -19,25 +19,31 @@ The best-shot subsystem may read A-series results later, but must not write back
 
 Establish one authoritative notion of a video frame before any still-image UI or quality ranking is implemented.
 
-The authority is the sorted unique list of actual sample presentation timestamps (PTS), not nominal FPS and not a synthetic `1 / fps` grid.
+The navigation authority is the sorted unique list of actual **displayable encoded video sample presentation timestamps (PTS)**, not nominal FPS and not a synthetic `1 / fps` grid.
 
 ## B0-A rules
 
-1. Enumerate compressed video samples with `AVAssetReaderTrackOutput(... outputSettings: nil)`.
-2. Collect valid sample PTS, sort by presentation time, and remove exact duplicates.
-3. B1/B2 navigation must refer to a frame by its PTS-list ordinal.
-4. When a frame is decoded, the decoded sample PTS must exactly equal the requested authority PTS.
-5. Never silently substitute the nearest neighboring frame. A mismatch is an explicit diagnostic failure.
-6. HLG/PQ sources request a 10-bit YCbCr decode surface; SDR/unknown currently request an 8-bit YCbCr surface.
-7. B0-A stays feature-flagged OFF and disconnected from `ContentView` and `VideoAnalysisViewModel` until its gate passes.
+1. Enumerate compressed video samples with `AVAssetReaderTrackOutput(... outputSettings: nil)`. These samples arrive in decode order.
+2. Exclude timing-only / zero-payload samples and samples marked `DoNotDisplay`.
+3. While decode order is still available, associate each admitted frame with the nearest preceding sync sample (`NotSync == false`).
+4. Sort admitted frames by presentation PTS and remove exact duplicate PTS values.
+5. B1/B2 navigation refers to a frame only by this presentation-PTS-list ordinal.
+6. To decode one selected frame, begin reading from its stored sync anchor and advance decoded presentation-order output until the exact target PTS is reached.
+7. The decoded sample PTS must exactly equal the requested authority PTS. Never silently substitute the nearest neighboring frame.
+8. HLG/PQ sources request a 10-bit YCbCr decode surface; SDR/unknown currently request an 8-bit YCbCr surface.
+9. B0-A stays feature-flagged OFF and disconnected from `ContentView` and `VideoAnalysisViewModel` until its gate passes.
+
+## Why sync anchors are required
+
+A compressed H.264/HEVC track can contain inter-frame dependencies and B-frame reordering. Starting a decoded read directly at an arbitrary presentation PTS is therefore not a reliable exact-frame contract. B0-A keeps navigation presentation-based while retaining the minimum decode-history information needed to reproduce that frame.
 
 ## Automated gate
 
 Synthetic VFR CI must verify:
 
-- irregular source PTS are indexed in exact presentation order;
-- every indexed PTS equals the source PTS;
-- selected frames decode with exact PTS equality;
+- the writer's intended source PTS values remain represented in the encoded presentation index;
+- the final authority index is strictly increasing after presentation-time sorting and deduplication;
+- every PTS admitted into the authority index can be decoded from its sync anchor back to exactly the same PTS;
 - VFR is detected from actual timing rather than nominal FPS;
 - HDR and SDR choose different decode-surface bit depths;
 - the existing A-series static/runtime/build/IPA regression remains green.
