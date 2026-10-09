@@ -17,7 +17,7 @@ for p in Path(".").rglob("*"):
 
 project = Path("project.yml").read_text(encoding="utf-8")
 assert re.search(r"MARKETING_VERSION:\s*0\.32\.0", project), "Version 0.32.0 missing"
-assert re.search(r"CURRENT_PROJECT_VERSION:\s*34", project), "Build 34 missing"
+assert re.search(r"CURRENT_PROJECT_VERSION:\s*35", project), "Build 35 missing"
 assert "jp.inari1234.videotargetfinder" in project, "Bundle ID mismatch"
 assert "UIFileSharingEnabled: true" in project, "File Sharing must stay enabled"
 assert "LSSupportsOpeningDocumentsInPlace: true" in project, "Open-in-place must stay enabled"
@@ -524,3 +524,22 @@ assert "Feedback detail Feature cache:" in view_model, "Feedback detailed Featur
 assert "mergedDetailWindows(" in Path("VideoTargetFinder/ScanPipelineCore.swift").read_text(encoding="utf-8"), "Detailed windows must remain pre-merged before cache optimization"
 
 print("Repository regression verification: PASS")
+
+
+# DIAG-2 shadow bridge / rescan merge diagnostic qualification
+shadow_diag = Path("VideoTargetFinder/SegmentBridgeShadowDiagnostics.swift").read_text(encoding="utf-8")
+merge_diag = Path("VideoTargetFinder/SegmentFeedbackMergeDiagnostics.swift").read_text(encoding="utf-8")
+assert Path("scripts/test_diag2_shadow_bridge.swift").exists(), "DIAG-2 shadow bridge regression missing"
+assert Path("scripts/test_diag2_rescan_merge.swift").exists(), "DIAG-2 rescan merge regression missing"
+assert "defaultShadowHorizon: TimeInterval = 6.0" in shadow_diag, "DIAG-2 shadow horizon must remain diagnostic-only at 6 s"
+assert "min(2.25, tolerated + 1.0)" in pipeline_core, "Production visual bridge ceiling must remain 2.25 s"
+assert "bridge-pair stage=%@" in view_model, "DIAG-2 pair identity log missing"
+assert "boundaryGap=%.3fs hitGap=%.3fs" in view_model, "DIAG-2 boundary/hit gap distinction missing"
+assert "visual-continuity-candidate" in view_model, "Visual evidence log semantic missing"
+assert "bridge-shadow-pass" in view_model and "bridge-shadow-fail" in view_model, "Shadow decision logs missing"
+assert "bridge-applied" in view_model, "Applied bridge log missing"
+assert "Segment continuity bridge confirmed" not in view_model, "Misleading pre-application bridge confirmation log returned"
+assert 'diagnosticStage: "feedback-rescan"' in view_model, "Feedback-rescan diagnostic stage missing"
+assert "discoverySource: .feedbackRescan" in view_model, "Feedback-rescan source tagging missing before merge"
+assert "feedback-rescan-merge-discarded stage=final/merge" in view_model, "Rescan discard diagnostic missing"
+assert "spansMultipleExistingSegments" in merge_diag, "Cross-existing-segment rescan diagnostic missing"

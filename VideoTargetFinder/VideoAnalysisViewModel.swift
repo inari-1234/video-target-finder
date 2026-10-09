@@ -775,7 +775,9 @@ final class VideoAnalysisViewModel: ObservableObject {
                     detailInterval: fineInterval,
                     asset: asset,
                     matcher: matcher,
-                    sensitivity: selectedSensitivity
+                    sensitivity: selectedSensitivity,
+                    diagnosticStage: "feedback-rescan",
+                    discoverySource: .feedbackRescan
                 )
                 let merged = self.mergeFeedbackRescanSegments(
                     existing: preservedSegments,
@@ -2455,6 +2457,7 @@ final class VideoAnalysisViewModel: ObservableObject {
         )
     }
 
+    // DIAG-2 shadow bridge runtime diagnostics. Production merge limits remain unchanged.
     private func buildSegments(
         from hits: [DetailedHit],
         observations: [ScanPipelineObservation],
@@ -2463,7 +2466,9 @@ final class VideoAnalysisViewModel: ObservableObject {
         detailInterval: TimeInterval,
         asset: AVAsset,
         matcher: FeaturePrintMatcher,
-        sensitivity: SearchSensitivity
+        sensitivity: SearchSensitivity,
+        diagnosticStage: String = "initial",
+        discoverySource: SegmentDiscoverySource = .initial
     ) async throws -> [DetectedSegment] {
         let points = hits.map {
             ScanPipelinePoint(time: $0.time, distance: $0.distance)
@@ -2480,10 +2485,13 @@ final class VideoAnalysisViewModel: ObservableObject {
             preliminaryPlans: preliminaryPlans,
             hits: hits,
             observations: observations,
+            hitThreshold: hitThreshold,
             asset: asset,
             matcher: matcher,
             sensitivity: sensitivity,
-            detailInterval: detailInterval
+            detailInterval: detailInterval,
+            diagnosticStage: diagnosticStage,
+            discoverySource: discoverySource
         )
 
         let plans: [ScanPipelineSegmentPlan]
@@ -2499,6 +2507,14 @@ final class VideoAnalysisViewModel: ObservableObject {
                 confirmedContinuityWindows: continuityWindows
             )
         }
+
+        logAppliedBridgeDiagnostics(
+            continuityWindows: continuityWindows,
+            finalPlans: plans,
+            hits: hits,
+            diagnosticStage: diagnosticStage,
+            discoverySource: discoverySource
+        )
 
         return plans.compactMap { plan in
             let group = hits[plan.hitRange]
@@ -2522,7 +2538,8 @@ final class VideoAnalysisViewModel: ObservableObject {
                 regionLabel: best.regionLabel,
                 hitCount: plan.hitCount,
                 trackingScore: plan.trackingScore,
-                aggregationScores: diagnosticScores
+                aggregationScores: diagnosticScores,
+                discoverySource: discoverySource
             )
         }
     }
@@ -2531,17 +2548,21 @@ final class VideoAnalysisViewModel: ObservableObject {
         preliminaryPlans: [ScanPipelineSegmentPlan],
         hits: [DetailedHit],
         observations: [ScanPipelineObservation],
+        hitThreshold: Float,
         asset: AVAsset,
         matcher: FeaturePrintMatcher,
         sensitivity: SearchSensitivity,
-        detailInterval: TimeInterval
+        detailInterval: TimeInterval,
+        diagnosticStage: String,
+        discoverySource: SegmentDiscoverySource
     ) async throws -> [ScanPipelineTimeWindow] {
         guard preliminaryPlans.count > 1 else { return [] }
 
-        let maximumBridgeSpan = ScanPipelineCore.maximumContinuityBridgeSpan(
-            detailInterval: detailInterval
-        )
+        let points = hits.map {
+            ScanPipelinePoint(time: $0.time, distance: $0.distance)
+        }
         let generator = Self.makeExactDiagnosticImageGenerator(asset: asset)
+        let shadowHorizon = SegmentBridgeShadowAnalyzer.defaultShadowHorizon
         var confirmed: [ScanPipelineTimeWindow] = []
 
         for index in 1..<preliminaryPlans.count {
@@ -2553,73 +2574,148 @@ final class VideoAnalysisViewModel: ObservableObject {
                 continue
             }
 
+            let splitIndex = rightPlan.hitRange.lowerBound
             let leftHit = hits[leftPlan.hitRange.upperBound - 1]
-            let rightHit = hits[rightPlan.hitRange.lowerBound]
-            let gap = rightHit.time - leftHit.time
-            guard gap > 0, gap <= maximumBridgeSpan else { continue }
+            let rightHit = hits[splitIndex]
+            let preVisual = SegmentBridgeShadowAnalyzer.evaluate(
+                hits: points,
+                splitIndex: splitIndex,
+                observations: observations,
+                hitThreshold: hitThreshold,
+                detailInterval: detailInterval
+            )
+            logBridgePairDiagnostic(
+                preVisual,
+                leftPlan: leftPlan,
+                rightPlan: rightPlan,
+                diagnosticStage: diagnosticStage,
+                discoverySource: discoverySource
+            )
 
-            let interior = observations.filter {
-                $0.time > leftHit.time &&
-                $0.time < rightHit.time
+            guard preVisual.acceptedHitGap > 0 else {
+                logShadowDecision(
+                    preVisual,
+                    diagnosticStage: diagnosticStage,
+                    discoverySource: discoverySource
+                )
+                continue
             }
-            guard !interior.isEmpty,
-                  !interior.contains(where: { $0.rejectedByNegative }) else {
+            guard preVisual.acceptedHitGap <= shadowHorizon else {
+                logVisualContinuityCandidate(
+                    leftHit: leftHit,
+                    rightHit: rightHit,
+                    attempt: (false, nil, "shadow-horizon-exceeded-skipped"),
+                    diagnosticStage: diagnosticStage,
+                    discoverySource: discoverySource
+                )
+                logShadowDecision(
+                    preVisual,
+                    diagnosticStage: diagnosticStage,
+                    discoverySource: discoverySource
+                )
+                continue
+            }
+            if !preVisual.hardNegativeTimes.isEmpty {
+                logVisualContinuityCandidate(
+                    leftHit: leftHit,
+                    rightHit: rightHit,
+                    attempt: (false, nil, "hard-negative-veto-skipped"),
+                    diagnosticStage: diagnosticStage,
+                    discoverySource: discoverySource
+                )
+                logShadowDecision(
+                    preVisual,
+                    diagnosticStage: diagnosticStage,
+                    discoverySource: discoverySource
+                )
                 continue
             }
 
-            let isContinuous = try await visuallyConfirmsContinuity(
+            let visualAttempt: (
+                passed: Bool,
+                diagnostic: SegmentVisualContinuityDiagnostic?,
+                failureReason: String?
+            )
+            do {
+                visualAttempt = try await visuallyEvaluateContinuity(
+                    leftHit: leftHit,
+                    rightHit: rightHit,
+                    generator: generator,
+                    matcher: matcher,
+                    sensitivity: sensitivity,
+                    detailInterval: detailInterval
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                visualAttempt = (false, nil, "frame-extraction-failure")
+            }
+
+            logVisualContinuityCandidate(
                 leftHit: leftHit,
                 rightHit: rightHit,
-                generator: generator,
-                matcher: matcher,
-                sensitivity: sensitivity,
-                detailInterval: detailInterval
+                attempt: visualAttempt,
+                diagnosticStage: diagnosticStage,
+                discoverySource: discoverySource
             )
-            if isContinuous {
+
+            if visualAttempt.passed {
                 confirmed.append(
                     ScanPipelineTimeWindow(
                         start: leftHit.time,
                         end: rightHit.time
                     )
                 )
-                DiagnosticLogger.log(
-                    String(
-                        format: "Segment continuity bridge confirmed: %.3f -> %.3f (gap %.3fs)",
-                        leftHit.time,
-                        rightHit.time,
-                        gap
-                    )
-                )
             }
+
+            let postVisual = SegmentBridgeShadowAnalyzer.evaluate(
+                hits: points,
+                splitIndex: splitIndex,
+                observations: observations,
+                hitThreshold: hitThreshold,
+                detailInterval: detailInterval,
+                visualContinuityPassed: visualAttempt.passed
+            )
+            logShadowDecision(
+                postVisual,
+                diagnosticStage: diagnosticStage,
+                discoverySource: discoverySource
+            )
         }
 
         return confirmed
     }
 
-    private func visuallyConfirmsContinuity(
+    private func visuallyEvaluateContinuity(
         leftHit: DetailedHit,
         rightHit: DetailedHit,
         generator: AVAssetImageGenerator,
         matcher: FeaturePrintMatcher,
         sensitivity: SearchSensitivity,
         detailInterval: TimeInterval
-    ) async throws -> Bool {
+    ) async throws -> (
+        passed: Bool,
+        diagnostic: SegmentVisualContinuityDiagnostic?,
+        failureReason: String?
+    ) {
         let regions = FrameRegionSampler.regions(for: sensitivity)
         guard let leftRegion = regions.first(where: { $0.label == leftHit.regionLabel }),
-              let rightRegion = regions.first(where: { $0.label == rightHit.regionLabel }),
-              let leftSeed = try await continuityTrackingSeed(
-                  at: leftHit.time,
-                  region: leftRegion,
-                  generator: generator,
-                  matcher: matcher
-              ),
-              let rightSeed = try await continuityTrackingSeed(
-                  at: rightHit.time,
-                  region: rightRegion,
-                  generator: generator,
-                  matcher: matcher
-              ) else {
-            return false
+              let rightRegion = regions.first(where: { $0.label == rightHit.regionLabel }) else {
+            return (false, nil, "tracking-region-missing")
+        }
+        guard let leftSeed = try await continuityTrackingSeed(
+            at: leftHit.time,
+            region: leftRegion,
+            generator: generator,
+            matcher: matcher
+        ),
+        let rightSeed = try await continuityTrackingSeed(
+            at: rightHit.time,
+            region: rightRegion,
+            generator: generator,
+            matcher: matcher
+        ) else {
+            return (false, nil, "seed-generation-failure")
         }
 
         let midpoint = (leftHit.time + rightHit.time) / 2.0
@@ -2629,7 +2725,7 @@ final class VideoAnalysisViewModel: ObservableObject {
         guard !midpointRegionRect.isNull,
               midpointRegionRect.width > 0,
               midpointRegionRect.height > 0 else {
-            return false
+            return (false, nil, "midpoint-region-failure")
         }
 
         let midpointFrame = try await generator.image(
@@ -2639,7 +2735,7 @@ final class VideoAnalysisViewModel: ObservableObject {
             from: midpointFrame,
             normalizedRect: midpointRegionRect
         ) else {
-            return false
+            return (false, nil, "midpoint-crop-failure")
         }
         let midpointBox = SendableCGImageBox(midpointCrop)
         let midpointSeedResult = await Task.detached(priority: .utility) {
@@ -2655,7 +2751,7 @@ final class VideoAnalysisViewModel: ObservableObject {
                   midpointLocalRect,
                   searchRegionTopLeft: midpointRegionRect
               ) else {
-            return false
+            return (false, nil, "midpoint-seed-generation-failure")
         }
 
         let step = min(0.20, max(0.10, detailInterval / 2.0))
@@ -2670,7 +2766,7 @@ final class VideoAnalysisViewModel: ObservableObject {
             step: step
         )
         guard forwardTimes.count >= 2, backwardTimes.count >= 2 else {
-            return false
+            return (false, nil, "insufficient-tracking-samples")
         }
 
         let forwardImages = try await continuityFrames(
@@ -2699,11 +2795,167 @@ final class VideoAnalysisViewModel: ObservableObject {
             )
         }.value
 
-        return SegmentContinuityAnalyzer.shouldBridge(
+        let diagnostic = SegmentContinuityAnalyzer.evaluate(
             forward: await forward,
             backward: await backward,
             midpointReferenceRect: midpointReferenceRect
         )
+        return (diagnostic.shouldBridge, diagnostic, nil)
+    }
+
+    private func logBridgePairDiagnostic(
+        _ diagnostic: SegmentBridgeShadowDiagnostic,
+        leftPlan: ScanPipelineSegmentPlan,
+        rightPlan: ScanPipelineSegmentPlan,
+        diagnosticStage: String,
+        discoverySource: SegmentDiscoverySource
+    ) {
+        let source = bridgeDiagnosticSourceLabel(discoverySource)
+        let hardNegativeText = diagnostic.hardNegativeTimes.isEmpty
+            ? "none"
+            : diagnostic.hardNegativeTimes
+                .map { String(format: "%.3f", $0) }
+                .joined(separator: ",")
+        DiagnosticLogger.log(
+            String(
+                format: "bridge-pair stage=%@ source=%@ leftSegment=%.3f-%.3f rightSegment=%.3f-%.3f leftHit=%.3f rightHit=%.3f boundaryGap=%.3fs hitGap=%.3fs productionMax=%.3fs shadowHorizon=%.3fs flank=%d/%d interior=%d expected=%d minRequired=%d distance=min %.4f max %.4f mean %.4f weak=%d ratio=%.3f hardNegative=%@ production=%@ reason=%@",
+                diagnosticStage,
+                source,
+                leftPlan.startTime,
+                leftPlan.endTime,
+                rightPlan.startTime,
+                rightPlan.endTime,
+                diagnostic.leftAcceptedHitTime,
+                diagnostic.rightAcceptedHitTime,
+                diagnostic.segmentBoundaryGap,
+                diagnostic.acceptedHitGap,
+                diagnostic.productionMaximumBridgeSpan,
+                diagnostic.shadowHorizon,
+                diagnostic.leftFlankHitCount,
+                diagnostic.rightFlankHitCount,
+                diagnostic.interiorObservationCount,
+                diagnostic.expectedObservationCount,
+                diagnostic.minimumRequiredObservationCount,
+                diagnostic.interiorDistanceMinimum ?? -1,
+                diagnostic.interiorDistanceMaximum ?? -1,
+                diagnostic.interiorDistanceMean ?? -1,
+                diagnostic.weakSupportCount,
+                diagnostic.weakSupportRatio,
+                hardNegativeText,
+                diagnostic.productionShouldBridge ? "bridge" : "split",
+                diagnostic.productionReason.rawValue
+            )
+        )
+    }
+
+    private func logVisualContinuityCandidate(
+        leftHit: DetailedHit,
+        rightHit: DetailedHit,
+        attempt: (
+            passed: Bool,
+            diagnostic: SegmentVisualContinuityDiagnostic?,
+            failureReason: String?
+        ),
+        diagnosticStage: String,
+        discoverySource: SegmentDiscoverySource
+    ) {
+        let source = bridgeDiagnosticSourceLabel(discoverySource)
+        let diagnostic = attempt.diagnostic
+        let reason = diagnostic?.reason.rawValue ?? attempt.failureReason ?? "unknown"
+        let seedFailure = reason.contains("seed") ? 1 : 0
+        let frameFailure = reason.contains("frame-extraction") ? 1 : 0
+        DiagnosticLogger.log(
+            String(
+                format: "visual-continuity-candidate stage=%@ source=%@ leftHit=%.3f rightHit=%.3f decision=%@ reason=%@ samples=%d/%d confidence=min %.3f mean %.3f tracker=iou %.3f shift %.3f midpoint=f %.3f/%.3f b %.3f/%.3f areaRatio=%.3f seedGenerationFailure=%d frameExtractionFailure=%d",
+                diagnosticStage,
+                source,
+                leftHit.time,
+                rightHit.time,
+                attempt.passed ? "pass" : "fail",
+                reason,
+                diagnostic?.forwardCount ?? 0,
+                diagnostic?.backwardCount ?? 0,
+                diagnostic?.minimumConfidence ?? -1,
+                diagnostic?.meanConfidence ?? -1,
+                diagnostic?.trackerIoU ?? -1,
+                diagnostic?.trackerCenterShift ?? -1,
+                diagnostic?.forwardMidpointIoU ?? -1,
+                diagnostic?.forwardMidpointShift ?? -1,
+                diagnostic?.backwardMidpointIoU ?? -1,
+                diagnostic?.backwardMidpointShift ?? -1,
+                diagnostic?.areaRatio ?? -1,
+                seedFailure,
+                frameFailure
+            )
+        )
+    }
+
+    private func logShadowDecision(
+        _ diagnostic: SegmentBridgeShadowDiagnostic,
+        diagnosticStage: String,
+        discoverySource: SegmentDiscoverySource
+    ) {
+        let source = bridgeDiagnosticSourceLabel(discoverySource)
+        let event = diagnostic.shadowShouldBridge ? "bridge-shadow-pass" : "bridge-shadow-fail"
+        DiagnosticLogger.log(
+            String(
+                format: "%@ stage=%@ source=%@ leftHit=%.3f rightHit=%.3f hitGap=%.3fs boundaryGap=%.3fs reason=%@ production=%@ productionReason=%@",
+                event,
+                diagnosticStage,
+                source,
+                diagnostic.leftAcceptedHitTime,
+                diagnostic.rightAcceptedHitTime,
+                diagnostic.acceptedHitGap,
+                diagnostic.segmentBoundaryGap,
+                diagnostic.shadowReason.rawValue,
+                diagnostic.productionShouldBridge ? "bridge" : "split",
+                diagnostic.productionReason.rawValue
+            )
+        )
+    }
+
+    private func logAppliedBridgeDiagnostics(
+        continuityWindows: [ScanPipelineTimeWindow],
+        finalPlans: [ScanPipelineSegmentPlan],
+        hits: [DetailedHit],
+        diagnosticStage: String,
+        discoverySource: SegmentDiscoverySource
+    ) {
+        let epsilon: TimeInterval = 0.001
+        let source = bridgeDiagnosticSourceLabel(discoverySource)
+        for window in continuityWindows {
+            guard let leftIndex = hits.firstIndex(where: {
+                abs($0.time - window.start) <= epsilon
+            }),
+            let rightIndex = hits.firstIndex(where: {
+                abs($0.time - window.end) <= epsilon
+            }),
+            let appliedPlan = finalPlans.first(where: {
+                $0.hitRange.contains(leftIndex) && $0.hitRange.contains(rightIndex)
+            }) else {
+                continue
+            }
+            DiagnosticLogger.log(
+                String(
+                    format: "bridge-applied stage=final/replay origin=%@ source=%@ leftHit=%.3f rightHit=%.3f finalSegment=%.3f-%.3f",
+                    diagnosticStage,
+                    source,
+                    window.start,
+                    window.end,
+                    appliedPlan.startTime,
+                    appliedPlan.endTime
+                )
+            )
+        }
+    }
+
+    private func bridgeDiagnosticSourceLabel(_ source: SegmentDiscoverySource) -> String {
+        switch source {
+        case .initial:
+            return "initial"
+        case .feedbackRescan:
+            return "feedback-rescan"
+        }
     }
 
     private func continuityTrackingSeed(
@@ -2801,6 +3053,52 @@ final class VideoAnalysisViewModel: ObservableObject {
             let overlapsExisting = result.contains { current in
                 candidate.startTime <= current.endTime + overlapTolerance &&
                 candidate.endTime >= current.startTime - overlapTolerance
+            }
+
+            let diagnostic = SegmentFeedbackMergeDiagnosticAnalyzer.evaluate(
+                candidate: SegmentFeedbackMergeDescriptor(
+                    startTime: candidate.startTime,
+                    endTime: candidate.endTime,
+                    discoverySource: bridgeDiagnosticSourceLabel(candidate.discoverySource),
+                    hitCount: candidate.hitCount,
+                    trackingScore: candidate.trackingScore
+                ),
+                existing: result.map {
+                    SegmentFeedbackMergeDescriptor(
+                        startTime: $0.startTime,
+                        endTime: $0.endTime,
+                        discoverySource: bridgeDiagnosticSourceLabel($0.discoverySource),
+                        hitCount: $0.hitCount,
+                        trackingScore: $0.trackingScore
+                    )
+                },
+                overlapTolerance: overlapTolerance
+            )
+
+            if overlapsExisting {
+                let overlapText = diagnostic.overlaps.map {
+                    String(
+                        format: "%.3f-%.3f(source=%@,overlap=%.3fs,toleranceAdjusted=%.3fs)",
+                        $0.existingStartTime,
+                        $0.existingEndTime,
+                        $0.existingDiscoverySource,
+                        $0.overlapAmount,
+                        $0.toleranceAdjustedOverlapAmount
+                    )
+                }.joined(separator: ";")
+                DiagnosticLogger.log(
+                    String(
+                        format: "feedback-rescan-merge-discarded stage=final/merge candidate=%.3f-%.3f source=%@ hitCount=%d trackingScore=%.3f overlapCount=%d spansMultipleExisting=%@ overlaps=%@",
+                        candidate.startTime,
+                        candidate.endTime,
+                        bridgeDiagnosticSourceLabel(candidate.discoverySource),
+                        candidate.hitCount,
+                        candidate.trackingScore,
+                        diagnostic.overlaps.count,
+                        diagnostic.spansMultipleExistingSegments ? "true" : "false",
+                        overlapText
+                    )
+                )
             }
 
             if !overlapsExisting {
