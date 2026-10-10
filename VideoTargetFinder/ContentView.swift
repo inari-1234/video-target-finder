@@ -470,6 +470,10 @@ struct ContentView: View {
                                     Text("\(viewModel.referenceLabel(for: segment.referenceIndex)) / \(segment.regionLabel)")
                                     Text("連続検出: \(segment.hitCount)ヒット / ヒット率 \(segment.trackingText)")
                                     Text("発見元: \(segment.discoverySource.rawValue)")
+                                    if segment.requiresReviewAfterMerge {
+                                        Text("統合済み・要確認")
+                                            .fontWeight(.semibold)
+                                    }
                                     Text("Feature distance: \(segment.distanceText)").monospacedDigit()
                                     let adjusted = viewModel.adjustedRange(for: segment)
                                     Text("切り出し予定: \(ScanCandidate.format(adjusted.start)) 〜 \(ScanCandidate.format(adjusted.end))").monospacedDigit()
@@ -576,6 +580,33 @@ struct ContentView: View {
                             Text("通常は1秒のままで構いません。")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
+
+                            Divider()
+                            Toggle(
+                                "診断: rescan gap merge corrective",
+                                isOn: Binding(
+                                    get: { viewModel.mergeCorrectiveEnabled },
+                                    set: { viewModel.setMergeCorrectiveEnabled($0) }
+                                )
+                            )
+                            .disabled(viewModel.isExclusiveWorkInProgress)
+                            Text("切替時はA/B混在防止のため解析結果をリセットし、初回探索からやり直します。再探索中は開始時の値で固定されます。")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                            HStack {
+                                Button("現在の○/×を記録") {
+                                    viewModel.recordFeedbackReviewSet()
+                                }
+                                .buttonStyle(.bordered)
+                                Button("記録した○/×を再適用") {
+                                    viewModel.applyRecordedFeedbackReviewSet()
+                                }
+                                .buttonStyle(.bordered)
+                                .disabled(viewModel.feedbackReviewReplayTemplateCount == 0 || viewModel.isExclusiveWorkInProgress)
+                            }
+                            Text("A/B判定セット: \(viewModel.feedbackReviewReplayTemplateCount)件")
+                                .font(.caption2.monospacedDigit())
+                                .foregroundStyle(.secondary)
                         }
                         .padding(.top, 4)
                     }
@@ -601,6 +632,10 @@ struct ContentView: View {
 
                     if viewModel.lastFeedbackRescanAddedCount > 0 {
                         Label("前回の再探索で \(viewModel.lastFeedbackRescanAddedCount)区間を追加", systemImage: "plus.circle.fill")
+                            .font(.subheadline)
+                    }
+                    if viewModel.lastFeedbackRescanMergedGapCount > 0 {
+                        Label("前回の再探索で \(viewModel.lastFeedbackRescanMergedGapCount)か所を統合・要再確認", systemImage: "link.circle.fill")
                             .font(.subheadline)
                     }
 

@@ -2,7 +2,7 @@
 from pathlib import Path
 import re
 
-ROOT_ALLOWED = {".github", ".gitignore", "README.md", "VideoTargetFinder", "docs", "project.yml", "scripts"}
+ROOT_ALLOWED = {".github", ".gitignore", "README.md", "VideoTargetFinder", "docs", "fixtures", "project.yml", "scripts"}
 root_names = {p.name for p in Path(".").iterdir() if p.name != ".git"}
 extra = sorted(root_names - ROOT_ALLOWED)
 assert not extra, f"Unexpected repository-root entries: {extra}"
@@ -17,7 +17,7 @@ for p in Path(".").rglob("*"):
 
 project = Path("project.yml").read_text(encoding="utf-8")
 assert re.search(r"MARKETING_VERSION:\s*0\.32\.0", project), "Version 0.32.0 missing"
-assert re.search(r"CURRENT_PROJECT_VERSION:\s*35", project), "Build 35 missing"
+assert re.search(r"CURRENT_PROJECT_VERSION:\s*36", project), "Build 36 missing"
 assert "jp.inari1234.videotargetfinder" in project, "Bundle ID mismatch"
 assert "UIFileSharingEnabled: true" in project, "File Sharing must stay enabled"
 assert "LSSupportsOpeningDocumentsInPlace: true" in project, "Open-in-place must stay enabled"
@@ -543,3 +543,37 @@ assert 'diagnosticStage: "feedback-rescan"' in view_model, "Feedback-rescan diag
 assert "discoverySource: .feedbackRescan" in view_model, "Feedback-rescan source tagging missing before merge"
 assert "feedback-rescan-merge-discarded stage=final/merge" in view_model, "Rescan discard diagnostic missing"
 assert "spansMultipleExistingSegments" in merge_diag, "Cross-existing-segment rescan diagnostic missing"
+
+
+# v0.32 Build 36 Corrective 1 runtime qualification guards.
+corrective = Path("VideoTargetFinder/FeedbackRescanGapMergeCorrective.swift").read_text(encoding="utf-8")
+ab_diag = Path("VideoTargetFinder/FeedbackRescanABDiagnostics.swift").read_text(encoding="utf-8")
+quality_gate = Path("VideoTargetFinder/ContinuityQualityGate.swift").read_text(encoding="utf-8")
+ground_truth = Path("fixtures/continuity_ground_truth_authority_v1.json").read_text(encoding="utf-8")
+assert Path("scripts/test_feedback_rescan_gap_merge_corrective.swift").exists(), "Corrective 1 merge regression missing"
+assert Path("scripts/test_feedback_rescan_ab_diagnostics.swift").exists(), "Feedback A/B replay regression missing"
+assert Path("scripts/test_continuity_quality_gate.swift").exists(), "Continuity quality gate regression missing"
+assert "maximumGapSpan: 4.0" in corrective, "Corrective 1 maximum gap must stay at 4.0s"
+assert "maximumInteriorHitlessSpan: 1.25" in corrective, "Longest hitless span guard missing"
+assert "defaultFeedbackRescanGapMerge = false" in corrective, "Corrective 1 must default OFF for A/B"
+assert "static let initialTierCBridge = false" in corrective, "Tier-C must remain disabled during Corrective 1"
+assert "mergeCorrectiveEnabledForRun = mergeCorrectiveEnabled" in view_model, "Rescan flag must be snapshotted at run start"
+assert "mergeFeedbackRescanSegmentsLegacy" in view_model, "OFF path must retain legacy merge implementation"
+assert "feedback-rescan-merge-mode run=" in view_model and "flag=OFF path=legacy" in view_model, "OFF legacy provenance log missing"
+assert "feedback-gap-decision flag=%@" in view_model, "Per-gap flag/reason diagnostic missing"
+assert "segmentIDRemap.register" in view_model and "segmentIDRemap.resolve" in view_model, "Segment ID remap integration missing"
+assert "segmentIDRemap.reset()" in view_model, "Segment ID remap reset missing"
+assert "requiresReviewAfterMerge: true" in view_model, "Merged segment must require user re-review"
+assert "reviewState: .unreviewed" in view_model and "isSelectedForExport: false" in view_model, "Merged review/export reset missing"
+assert "preserveMergedLearnedReferences" in view_model, "Merged positive learned references must be retained"
+assert "retainedMergedLearnedReferences.removeAll" in view_model, "Rejecting merged canonical must remove retained positives"
+assert "feedback-review-set-recorded" in view_model and "feedback-review-set-replayed" in view_model, "A/B review capture/replay runtime missing"
+assert "FeedbackReviewReplayMatcher.match" in view_model, "A/B review replay must be geometry-validated"
+assert "feedback-rescan-input run=" in view_model and "reviews=" in view_model, "Per-run A/B input log missing"
+assert 'Text("統合済み・要確認")' in content, "Merged segment re-review marker missing"
+assert '"診断: rescan gap merge corrective"' in content, "Corrective 1 runtime toggle missing"
+assert '"現在の○/×を記録"' in content and '"記録した○/×を再適用"' in content, "A/B review replay controls missing"
+assert 'case mergedFeedback = "初回＋学習再探索"' in detected_segment, "Merged discovery provenance missing"
+assert '"label": "same_appearance"' in ground_truth and '"label": "unknown"' in ground_truth, "Ground-truth partial Authority labels missing"
+assert "ContinuityQualityGateAnalyzer" in quality_gate, "Appearance-based quality gate missing"
+assert "FeedbackReviewReplayMatcher" in ab_diag, "A/B review replay core missing"

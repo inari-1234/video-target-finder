@@ -50,6 +50,9 @@ final class VideoAnalysisViewModel: ObservableObject {
     // Stage 6: feedback learning / re-scan state
     @Published private(set) var learnedReferences: [LearnedReference] = []
     @Published private(set) var lastFeedbackRescanAddedCount = 0
+    @Published private(set) var lastFeedbackRescanMergedGapCount = 0
+    @Published private(set) var mergeCorrectiveEnabled = ContinuityCorrectiveFeatureFlags.defaultFeedbackRescanGapMerge
+    @Published private(set) var feedbackReviewReplayTemplateCount = 0
 
     // Stage 5: export state
     @Published private(set) var isExporting = false
@@ -120,6 +123,9 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     private var feedbackRescanRuns: [FeedbackRescanRuntimeRun] = []
+    private var segmentIDRemap = SegmentIDRemapTable()
+    private var retainedMergedLearnedReferences: [LearnedReference] = []
+    private var feedbackReviewReplayTemplate: FeedbackReviewReplayTemplate?
     private var initialCoarseFeatureCache: [Int: CoarseFeatureCacheEntry] = [:]
     private var initialDetailFeatureCache: [Int: CoarseFeatureCacheEntry] = [:]
     private var initialDetailFeatureCacheSensitivity: SearchSensitivity?
@@ -207,6 +213,7 @@ final class VideoAnalysisViewModel: ObservableObject {
                 videoAsset = asset
                 videoMetadata = metadata
                 videoAssetIdentifier = identifier
+                clearFeedbackReviewReplayTemplate()
                 resetResults()
                 DiagnosticLogger.log("Video loaded: \(metadata.durationText), \(metadata.resolutionText), \(metadata.frameRateText)")
                 statusMessage = referenceImages.isEmpty
@@ -226,6 +233,7 @@ final class VideoAnalysisViewModel: ObservableObject {
         hasRecoverableScan = false
         checkpointReferencesWritten = false
         referenceImages = Array(images.prefix(5))
+        clearFeedbackReviewReplayTemplate()
         resetResults()
         errorMessage = nil
         statusMessage = videoAsset == nil
@@ -240,6 +248,7 @@ final class VideoAnalysisViewModel: ObservableObject {
         hasRecoverableScan = false
         checkpointReferencesWritten = false
         referenceImages.remove(at: index)
+        clearFeedbackReviewReplayTemplate()
         resetResults()
         statusMessage = referenceImages.isEmpty
             ? "見本画像を1〜5枚選択してください。"
@@ -512,13 +521,15 @@ final class VideoAnalysisViewModel: ObservableObject {
 
     func reviewSegment(id: UUID, as state: SegmentReviewState) {
         guard !isExclusiveWorkInProgress else { return }
-        guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
+        let resolvedID = segmentIDRemap.resolve(id)
+        guard let index = segments.firstIndex(where: { $0.id == resolvedID }) else { return }
         let changedDiscoverySource = segments[index].discoverySource
         segments[index].reviewState = state
-        if changedDiscoverySource == .feedbackRescan {
+        segments[index].requiresReviewAfterMerge = false
+        if changedDiscoverySource == .feedbackRescan || changedDiscoverySource == .mergedFeedback {
             foregroundReserveRerankSummary = nil
         }
-        if changedDiscoverySource == .initial {
+        if changedDiscoverySource == .initial || changedDiscoverySource == .mergedFeedback {
             trackingSeedQualitySummary = nil
             objectTrackingBenchmarkSummary = nil
         }
@@ -528,6 +539,9 @@ final class VideoAnalysisViewModel: ObservableObject {
             segments[index].isSelectedForExport = true
         case .rejected:
             segments[index].isSelectedForExport = false
+            retainedMergedLearnedReferences.removeAll {
+                segmentIDRemap.resolve($0.sourceSegmentID) == resolvedID
+            }
         case .unreviewed:
             break
         }
@@ -540,7 +554,8 @@ final class VideoAnalysisViewModel: ObservableObject {
 
     func toggleSegmentSelection(id: UUID) {
         guard !isExclusiveWorkInProgress else { return }
-        guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
+        let resolvedID = segmentIDRemap.resolve(id)
+        guard let index = segments.firstIndex(where: { $0.id == resolvedID }) else { return }
         guard segments[index].reviewState != .rejected else {
             segments[index].isSelectedForExport = false
             statusMessage = "誤検出と判定した候補は切り出し対象にできません。正解に変更してから選択してください。"
@@ -588,6 +603,103 @@ final class VideoAnalysisViewModel: ObservableObject {
 
     // MARK: - Stage 6 feedback learning / re-scan
 
+    func setMergeCorrectiveEnabled(_ enabled: Bool) {
+        guard !isExclusiveWorkInProgress else { return }
+        guard mergeCorrectiveEnabled != enabled else { return }
+        mergeCorrectiveEnabled = enabled
+        let hadAnalysisState = !segments.isEmpty || !candidates.isEmpty
+        if hadAnalysisState {
+            resetResults()
+            statusMessage = "比較条件を変更しました。A/Bを混在させないため、初回探索からやり直してください。"
+        } else {
+            statusMessage = "学習再探索のmerge correctiveを\(enabled ? "ON" : "OFF")にしました。次の再探索開始時に固定されます。"
+        }
+        DiagnosticLogger.log(
+            "merge-corrective-toggle value=\(enabled ? "ON" : "OFF") analysisReset=\(hadAnalysisState)"
+        )
+    }
+
+    func recordFeedbackReviewSet() {
+        guard !isExclusiveWorkInProgress else { return }
+        guard let videoAssetIdentifier, !segments.isEmpty else {
+            statusMessage = "判定セットを記録するには、初回探索と○/×判定が必要です。"
+            return
+        }
+        guard segments.allSatisfy({ $0.discoverySource == .initial }) else {
+            statusMessage = "判定セットは初回探索結果から記録してください。再探索後は初回探索をやり直してください。"
+            return
+        }
+        let descriptors = feedbackReviewReplaySegments()
+        let template = FeedbackReviewReplayMatcher.makeTemplate(
+            videoAssetIdentifier: videoAssetIdentifier,
+            segments: descriptors
+        )
+        feedbackReviewReplayTemplate = template
+        feedbackReviewReplayTemplateCount = template.segments.filter { $0.reviewStateRawValue != nil }.count
+        let reviewText = FeedbackReviewReplayMatcher.reviewLogString(template.segments)
+        DiagnosticLogger.log("feedback-review-set-recorded count=\(feedbackReviewReplayTemplateCount) reviews=\(reviewText)")
+        statusMessage = "現在の○/×判定を \(feedbackReviewReplayTemplateCount)件記録しました。A/Bの次条件で再適用できます。"
+    }
+
+    func applyRecordedFeedbackReviewSet() {
+        guard !isExclusiveWorkInProgress else { return }
+        guard let template = feedbackReviewReplayTemplate,
+              let videoAssetIdentifier,
+              !segments.isEmpty else {
+            statusMessage = "再適用できる判定セットがありません。"
+            return
+        }
+        guard segments.allSatisfy({ $0.discoverySource == .initial }) else {
+            statusMessage = "判定セットは再探索前の初回探索結果にだけ再適用できます。"
+            return
+        }
+
+        switch FeedbackReviewReplayMatcher.match(
+            template: template,
+            currentVideoAssetIdentifier: videoAssetIdentifier,
+            currentSegments: feedbackReviewReplaySegments()
+        ) {
+        case .failure(let error):
+            DiagnosticLogger.log("feedback-review-set-replay-failed reason=\(error.rawValue)")
+            statusMessage = "判定セットを再適用できませんでした（\(error.rawValue)）。部分適用はしていません。"
+        case .success(let match):
+            for index in segments.indices {
+                segments[index].reviewState = .unreviewed
+                segments[index].isSelectedForExport = false
+                segments[index].requiresReviewAfterMerge = false
+            }
+            for index in segments.indices {
+                guard let rawValue = match.assignments[segments[index].id],
+                      let state = SegmentReviewState(rawValue: rawValue) else { continue }
+                segments[index].reviewState = state
+                segments[index].isSelectedForExport = state == .confirmed
+            }
+            retainedMergedLearnedReferences = []
+            segmentIDRemap.reset()
+            refreshLearnedReferencesFromConfirmedSegments()
+            feedbackThreshold = calculateSuggestedFeedbackThreshold()
+            let reviewText = FeedbackReviewReplayMatcher.reviewLogString(feedbackReviewReplaySegments())
+            DiagnosticLogger.log("feedback-review-set-replayed count=\(match.reviewedCount) reviews=\(reviewText)")
+            statusMessage = "記録した○/×判定を \(match.reviewedCount)件再適用しました。"
+        }
+    }
+
+    private func feedbackReviewReplaySegments() -> [FeedbackReviewReplaySegment] {
+        segments.map { segment in
+            FeedbackReviewReplaySegment(
+                id: segment.id,
+                startTime: segment.startTime,
+                endTime: segment.endTime,
+                reviewStateRawValue: segment.reviewState == .unreviewed ? nil : segment.reviewState.rawValue
+            )
+        }
+    }
+
+    private func clearFeedbackReviewReplayTemplate() {
+        feedbackReviewReplayTemplate = nil
+        feedbackReviewReplayTemplateCount = 0
+    }
+
     var canRunFeedbackRescan: Bool {
         !learnedReferences.isEmpty && videoAsset != nil && !isExclusiveWorkInProgress
     }
@@ -627,7 +739,14 @@ final class VideoAnalysisViewModel: ObservableObject {
             .compactMap { $0.matchThumbnail.normalizedCGImage() }
 
         let preservedSegments = segments
+        let preservedLearnedReferences = learnedReferences
+        let preservedSegmentIDRemap = segmentIDRemap
+        let preservedRetainedMergedLearnedReferences = retainedMergedLearnedReferences
+        let mergeCorrectiveEnabledForRun = mergeCorrectiveEnabled
         let rescanRunNumber = feedbackRescanRuns.count + 1
+        let reviewInputText = FeedbackReviewReplayMatcher.reviewLogString(feedbackReviewReplaySegments())
+        let mergeCorrectiveFlagText = mergeCorrectiveEnabledForRun ? "ON" : "OFF"
+        DiagnosticLogger.log("feedback-rescan-input run=\(rescanRunNumber) mergeCorrective=\(mergeCorrectiveFlagText) reviews=\(reviewInputText)")
         let coarseInterval = max(0.5, min(5.0, feedbackRescanInterval))
         let fineInterval = min(0.5, max(0.10, detailInterval))
         let selectedSensitivity = sensitivity
@@ -636,6 +755,7 @@ final class VideoAnalysisViewModel: ObservableObject {
         isScanPaused = false
         pauseReason = nil
         lastFeedbackRescanAddedCount = 0
+        lastFeedbackRescanMergedGapCount = 0
         scanProgress = 0
         scanPhase = "学習再探索"
         errorMessage = nil
@@ -779,15 +899,37 @@ final class VideoAnalysisViewModel: ObservableObject {
                     diagnosticStage: "feedback-rescan",
                     discoverySource: .feedbackRescan
                 )
-                let merged = self.mergeFeedbackRescanSegments(
-                    existing: preservedSegments,
-                    newSegments: rescannedSegments
+                let mergeOutcome: (
+                    segments: [DetectedSegment],
+                    mergedGapCount: Int,
+                    affectedCanonicalIDs: Set<UUID>
                 )
+                if mergeCorrectiveEnabledForRun {
+                    mergeOutcome = self.mergeFeedbackRescanSegmentsCorrective(
+                        existing: preservedSegments,
+                        newSegments: rescannedSegments,
+                        acceptedHitTimes: detail.hits.map(\.time),
+                        observations: detail.observations,
+                        flagEnabled: mergeCorrectiveEnabledForRun
+                    )
+                } else {
+                    DiagnosticLogger.log("feedback-rescan-merge-mode run=\(rescanRunNumber) flag=OFF path=legacy")
+                    mergeOutcome = (
+                        self.mergeFeedbackRescanSegmentsLegacy(
+                            existing: preservedSegments,
+                            newSegments: rescannedSegments
+                        ),
+                        0,
+                        []
+                    )
+                }
+                let merged = mergeOutcome.segments
                 let preservedIDs = Set(preservedSegments.map(\.id))
                 let addedIDs = merged
                     .filter { !preservedIDs.contains($0.id) }
                     .map(\.id)
                 self.lastFeedbackRescanAddedCount = addedIDs.count
+                self.lastFeedbackRescanMergedGapCount = mergeOutcome.mergedGapCount
                 self.feedbackRescanRuns.append(
                     FeedbackRescanRuntimeRun(
                         runNumber: rescanRunNumber,
@@ -804,20 +946,35 @@ final class VideoAnalysisViewModel: ObservableObject {
                     )
                 )
                 self.segments = merged
+                self.preserveMergedLearnedReferences(
+                    preservedLearnedReferences,
+                    affectedCanonicalIDs: mergeOutcome.affectedCanonicalIDs
+                )
                 self.refreshLearnedReferencesFromConfirmedSegments()
                 self.feedbackThreshold = self.calculateSuggestedFeedbackThreshold()
                 self.scanProgress = 1
                 self.scanPhase = "完了"
-                self.statusMessage = self.lastFeedbackRescanAddedCount == 0
-                    ? "学習再探索が完了しました。新しい非重複候補はありませんでした。"
-                    : "学習再探索で新しい候補を \(self.lastFeedbackRescanAddedCount)区間追加しました。"
+                if self.lastFeedbackRescanMergedGapCount > 0 {
+                    let addedText = self.lastFeedbackRescanAddedCount > 0
+                        ? " 新しい非重複候補も \(self.lastFeedbackRescanAddedCount)区間追加しました。"
+                        : ""
+                    self.statusMessage = "\(self.lastFeedbackRescanMergedGapCount)か所の分断を統合しました。統合済み区間を再確認してください。" + addedText
+                } else {
+                    self.statusMessage = self.lastFeedbackRescanAddedCount == 0
+                        ? "学習再探索が完了しました。新しい非重複候補はありませんでした。"
+                        : "学習再探索で新しい候補を \(self.lastFeedbackRescanAddedCount)区間追加しました。"
+                }
                 self.persistRecognitionReportSnapshot(reason: "feedback-rescan-completed")
             } catch is CancellationError {
                 self.segments = preservedSegments
+                self.segmentIDRemap = preservedSegmentIDRemap
+                self.retainedMergedLearnedReferences = preservedRetainedMergedLearnedReferences
                 self.scanPhase = "キャンセル"
                 self.statusMessage = "学習再探索をキャンセルしました。既存の判定は保持しています。"
             } catch {
                 self.segments = preservedSegments
+                self.segmentIDRemap = preservedSegmentIDRemap
+                self.retainedMergedLearnedReferences = preservedRetainedMergedLearnedReferences
                 self.errorMessage = error.localizedDescription
                 self.scanPhase = "エラー"
                 self.statusMessage = "学習再探索に失敗しました。既存の判定は保持しています。"
@@ -2955,6 +3112,8 @@ final class VideoAnalysisViewModel: ObservableObject {
             return "initial"
         case .feedbackRescan:
             return "feedback-rescan"
+        case .mergedFeedback:
+            return "initial+feedback-rescan"
         }
     }
 
@@ -3026,23 +3185,82 @@ final class VideoAnalysisViewModel: ObservableObject {
     }
 
     private func refreshLearnedReferencesFromConfirmedSegments() {
-        // Feature Printの比較回数が増え過ぎないよう、学習見本は最大8枚。
-        // 距離が小さい（元の見本に近い）正解候補から優先する。
+        let rejectedIDs = Set(segments.filter { $0.reviewState == .rejected }.map(\.id))
+        retainedMergedLearnedReferences = retainedMergedLearnedReferences.compactMap { reference in
+            let resolvedID = segmentIDRemap.resolve(reference.sourceSegmentID)
+            guard !rejectedIDs.contains(resolvedID) else { return nil }
+            return LearnedReference(
+                id: reference.id,
+                sourceSegmentID: resolvedID,
+                image: reference.image,
+                sourceTime: reference.sourceTime
+            )
+        }
+
+        var combined: [LearnedReference] = []
+        for reference in retainedMergedLearnedReferences {
+            appendLearnedReferenceIfDistinct(reference, to: &combined)
+        }
+
         let confirmed = segments
             .filter { $0.reviewState == .confirmed }
             .sorted { $0.bestDistance < $1.bestDistance }
-            .prefix(8)
+        for segment in confirmed {
+            appendLearnedReferenceIfDistinct(
+                LearnedReference(
+                    sourceSegmentID: segmentIDRemap.resolve(segment.id),
+                    image: segment.matchThumbnail,
+                    sourceTime: segment.bestTime
+                ),
+                to: &combined
+            )
+        }
+        learnedReferences = Array(combined.prefix(8))
+    }
 
-        learnedReferences = confirmed.map { segment in
+    private func appendLearnedReferenceIfDistinct(
+        _ reference: LearnedReference,
+        to list: inout [LearnedReference]
+    ) {
+        let canonicalID = segmentIDRemap.resolve(reference.sourceSegmentID)
+        let duplicate = list.contains {
+            segmentIDRemap.resolve($0.sourceSegmentID) == canonicalID &&
+            abs($0.sourceTime - reference.sourceTime) <= 0.001
+        }
+        guard !duplicate else { return }
+        list.append(
             LearnedReference(
-                sourceSegmentID: segment.id,
-                image: segment.matchThumbnail,
-                sourceTime: segment.bestTime
+                id: reference.id,
+                sourceSegmentID: canonicalID,
+                image: reference.image,
+                sourceTime: reference.sourceTime
+            )
+        )
+    }
+
+    private func preserveMergedLearnedReferences(
+        _ previous: [LearnedReference],
+        affectedCanonicalIDs: Set<UUID>
+    ) {
+        guard !affectedCanonicalIDs.isEmpty else { return }
+        for reference in previous {
+            let canonicalID = segmentIDRemap.resolve(reference.sourceSegmentID)
+            guard affectedCanonicalIDs.contains(canonicalID) else { continue }
+            appendLearnedReferenceIfDistinct(
+                LearnedReference(
+                    id: reference.id,
+                    sourceSegmentID: canonicalID,
+                    image: reference.image,
+                    sourceTime: reference.sourceTime
+                ),
+                to: &retainedMergedLearnedReferences
             )
         }
     }
 
-    private func mergeFeedbackRescanSegments(
+    // Build 35 compatibility path. When Corrective 1 is OFF this exact path is used and the
+    // gap planner/remap/merged fields are not touched.
+    private func mergeFeedbackRescanSegmentsLegacy(
         existing: [DetectedSegment],
         newSegments: [DetectedSegment]
     ) -> [DetectedSegment] {
@@ -3109,6 +3327,222 @@ final class VideoAnalysisViewModel: ObservableObject {
         }
 
         return result.sorted { $0.startTime < $1.startTime }
+    }
+
+    private func mergeFeedbackRescanSegmentsCorrective(
+        existing: [DetectedSegment],
+        newSegments: [DetectedSegment],
+        acceptedHitTimes: [TimeInterval],
+        observations: [ScanPipelineObservation],
+        flagEnabled: Bool
+    ) -> (
+        segments: [DetectedSegment],
+        mergedGapCount: Int,
+        affectedCanonicalIDs: Set<UUID>
+    ) {
+        var result = existing
+        let overlapTolerance: TimeInterval = 0.45
+        var mergedGapCount = 0
+        var affectedCanonicalIDs = Set<UUID>()
+
+        for candidate in newSegments.sorted(by: { $0.startTime < $1.startTime }) {
+            let overlapsExisting = result.contains { current in
+                candidate.startTime <= current.endTime + overlapTolerance &&
+                candidate.endTime >= current.startTime - overlapTolerance
+            }
+
+            let diagnostic = SegmentFeedbackMergeDiagnosticAnalyzer.evaluate(
+                candidate: SegmentFeedbackMergeDescriptor(
+                    startTime: candidate.startTime,
+                    endTime: candidate.endTime,
+                    discoverySource: bridgeDiagnosticSourceLabel(candidate.discoverySource),
+                    hitCount: candidate.hitCount,
+                    trackingScore: candidate.trackingScore
+                ),
+                existing: result.map {
+                    SegmentFeedbackMergeDescriptor(
+                        startTime: $0.startTime,
+                        endTime: $0.endTime,
+                        discoverySource: bridgeDiagnosticSourceLabel($0.discoverySource),
+                        hitCount: $0.hitCount,
+                        trackingScore: $0.trackingScore
+                    )
+                },
+                overlapTolerance: overlapTolerance
+            )
+
+            var appliedForCandidate = 0
+            if overlapsExisting {
+                let candidateHits = acceptedHitTimes.filter {
+                    $0 >= candidate.startTime - overlapTolerance &&
+                    $0 <= candidate.endTime + overlapTolerance
+                }
+                let hardNegatives = observations.filter {
+                    $0.rejectedByNegative &&
+                    $0.time >= candidate.startTime - overlapTolerance &&
+                    $0.time <= candidate.endTime + overlapTolerance
+                }.map(\.time)
+                let plan = FeedbackRescanGapMergePlanner.plan(
+                    existing: result.map {
+                        FeedbackMergeExistingSegment(
+                            id: $0.id,
+                            startTime: $0.startTime,
+                            endTime: $0.endTime,
+                            isRejected: $0.reviewState == .rejected
+                        )
+                    },
+                    evidence: FeedbackRescanGapEvidence(
+                        candidateStartTime: candidate.startTime,
+                        candidateEndTime: candidate.endTime,
+                        acceptedHitTimes: candidateHits,
+                        hardNegativeTimes: hardNegatives
+                    ),
+                    enabled: flagEnabled
+                )
+
+                for decision in plan.decisions {
+                    let hardNegativeText = decision.hardNegativeTimes.isEmpty
+                        ? "none"
+                        : decision.hardNegativeTimes.map { String(format: "%.3f", $0) }.joined(separator: ",")
+                    DiagnosticLogger.log(
+                        String(
+                            format: "feedback-gap-decision flag=%@ candidate=%.3f-%.3f gap=%.3f-%.3f span=%.3fs hits=%d maxHitless=%.3fs hardNegative=%@ decision=%@ reason=%@",
+                            flagEnabled ? "ON" : "OFF",
+                            candidate.startTime,
+                            candidate.endTime,
+                            decision.gapStartTime,
+                            decision.gapEndTime,
+                            decision.gapSpan,
+                            decision.interiorHitCount,
+                            decision.maximumHitlessSpan,
+                            hardNegativeText,
+                            decision.shouldMerge ? "merge" : "split",
+                            decision.reason.rawValue
+                        )
+                    )
+                }
+
+                for group in plan.groups {
+                    let memberIDSet = Set(group.memberIDs)
+                    let members = result.filter { memberIDSet.contains($0.id) }
+                    guard members.count == group.memberIDs.count,
+                          let mergedSegment = materializeMergedSegment(group: group, members: members) else {
+                        continue
+                    }
+                    var appliedRemap: [UUID: UUID] = [:]
+                    for id in group.memberIDs where id != group.canonicalID {
+                        appliedRemap[id] = group.canonicalID
+                    }
+                    segmentIDRemap.register(appliedRemap)
+                    result.removeAll { memberIDSet.contains($0.id) }
+                    result.append(mergedSegment)
+                    affectedCanonicalIDs.insert(segmentIDRemap.resolve(group.canonicalID))
+                    let appliedGapCount = max(0, group.memberIDs.count - 1)
+                    appliedForCandidate += appliedGapCount
+                    mergedGapCount += appliedGapCount
+                    DiagnosticLogger.log(
+                        String(
+                            format: "feedback-rescan-gap-merged flag=ON canonical=%@ members=%@ range=%.3f-%.3f review=unreviewed export=false",
+                            group.canonicalID.uuidString,
+                            group.memberIDs.map(\.uuidString).joined(separator: ","),
+                            group.startTime,
+                            group.endTime
+                        )
+                    )
+                }
+            }
+
+            if overlapsExisting && appliedForCandidate == 0 {
+                let overlapText = diagnostic.overlaps.map {
+                    String(
+                        format: "%.3f-%.3f(source=%@,overlap=%.3fs,toleranceAdjusted=%.3fs)",
+                        $0.existingStartTime,
+                        $0.existingEndTime,
+                        $0.existingDiscoverySource,
+                        $0.overlapAmount,
+                        $0.toleranceAdjustedOverlapAmount
+                    )
+                }.joined(separator: ";")
+                DiagnosticLogger.log(
+                    String(
+                        format: "feedback-rescan-merge-discarded stage=final/merge candidate=%.3f-%.3f source=%@ hitCount=%d trackingScore=%.3f overlapCount=%d spansMultipleExisting=%@ overlaps=%@",
+                        candidate.startTime,
+                        candidate.endTime,
+                        bridgeDiagnosticSourceLabel(candidate.discoverySource),
+                        candidate.hitCount,
+                        candidate.trackingScore,
+                        diagnostic.overlaps.count,
+                        diagnostic.spansMultipleExistingSegments ? "true" : "false",
+                        overlapText
+                    )
+                )
+            } else if appliedForCandidate > 0 {
+                DiagnosticLogger.log(
+                    String(
+                        format: "feedback-rescan-merge-consumed-as-evidence flag=ON candidate=%.3f-%.3f mergedGaps=%d",
+                        candidate.startTime,
+                        candidate.endTime,
+                        appliedForCandidate
+                    )
+                )
+            }
+
+            if !overlapsExisting {
+                var taggedCandidate = candidate
+                taggedCandidate.discoverySource = .feedbackRescan
+                result.append(taggedCandidate)
+            }
+        }
+
+        return (
+            result.sorted { $0.startTime < $1.startTime },
+            mergedGapCount,
+            affectedCanonicalIDs
+        )
+    }
+
+    private func materializeMergedSegment(
+        group: FeedbackRescanMergeGroup,
+        members: [DetectedSegment]
+    ) -> DetectedSegment? {
+        guard !members.isEmpty else { return nil }
+        let sorted = members.sorted {
+            if abs($0.startTime - $1.startTime) > 0.000_001 {
+                return $0.startTime < $1.startTime
+            }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        guard sorted.first?.id == group.canonicalID else { return nil }
+        let best = members.min {
+            if abs($0.bestDistance - $1.bestDistance) > 0.000_001 {
+                return $0.bestDistance < $1.bestDistance
+            }
+            return $0.bestTime < $1.bestTime
+        } ?? sorted[0]
+        let totalHits = members.reduce(0) { $0 + max(0, $1.hitCount) }
+        let weightedDenominator = members.reduce(0) { $0 + max(1, $1.hitCount) }
+        let weightedTracking = members.reduce(0.0) {
+            $0 + $1.trackingScore * Double(max(1, $1.hitCount))
+        } / Double(max(1, weightedDenominator))
+
+        return DetectedSegment(
+            id: group.canonicalID,
+            startTime: group.startTime,
+            endTime: group.endTime,
+            bestTime: best.bestTime,
+            bestDistance: best.bestDistance,
+            thumbnail: best.thumbnail,
+            matchThumbnail: best.matchThumbnail,
+            referenceIndex: best.referenceIndex,
+            regionLabel: best.regionLabel,
+            hitCount: totalHits,
+            trackingScore: weightedTracking,
+            aggregationScores: best.aggregationScores,
+            discoverySource: .mergedFeedback,
+            reviewState: .unreviewed,
+            isSelectedForExport: false,
+            requiresReviewAfterMerge: true
+        )
     }
 
     private func makeDetailWindows(
@@ -3747,7 +4181,10 @@ final class VideoAnalysisViewModel: ObservableObject {
         adaptiveThreshold = nil
         feedbackThreshold = nil
         learnedReferences = []
+        retainedMergedLearnedReferences = []
+        segmentIDRemap.reset()
         lastFeedbackRescanAddedCount = 0
+        lastFeedbackRescanMergedGapCount = 0
         feedbackRescanRuns = []
         initialCoarseFeatureCache = [:]
         initialDetailFeatureCache = [:]
