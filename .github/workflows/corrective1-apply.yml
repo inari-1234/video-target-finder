@@ -1,0 +1,42 @@
+name: Corrective 1 Source Applicator
+
+on:
+  push:
+    branches:
+      - video-target-finder-candidate
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: contains(github.event.head_commit.message, '[apply-corrective1]')
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: video-target-finder-candidate
+          fetch-depth: 0
+
+      - name: Apply guarded runtime integration
+        run: |
+          python3 scripts/apply_corrective1_integration.py
+          swiftc -frontend -parse VideoTargetFinder/*.swift
+          python3 -m py_compile scripts/verify_source.py
+          python3 scripts/verify_source.py
+          swiftc VideoTargetFinder/FeedbackRescanGapMergeCorrective.swift scripts/test_feedback_rescan_gap_merge_corrective.swift -o /tmp/corrective1-gap-merge-tests
+          /tmp/corrective1-gap-merge-tests
+          swiftc VideoTargetFinder/FeedbackRescanABDiagnostics.swift scripts/test_feedback_rescan_ab_diagnostics.swift -o /tmp/feedback-rescan-ab-tests
+          /tmp/feedback-rescan-ab-tests
+          swiftc VideoTargetFinder/ContinuityQualityGate.swift scripts/test_continuity_quality_gate.swift -o /tmp/continuity-quality-gate-tests
+          /tmp/continuity-quality-gate-tests
+
+      - name: Commit integrated sources
+        run: |
+          test -n "$(git status --porcelain)"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "corrective1: connect guarded feedback merge runtime"
+          git push origin HEAD:video-target-finder-candidate
