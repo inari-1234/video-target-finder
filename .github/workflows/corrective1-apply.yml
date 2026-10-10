@@ -23,6 +23,20 @@ jobs:
       - name: Apply guarded runtime integration
         run: |
           python3 scripts/apply_corrective1_integration.py
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path("VideoTargetFinder/VideoAnalysisViewModel.swift")
+          text = path.read_text(encoding="utf-8")
+          old = '        DiagnosticLogger.log("feedback-rescan-input run=\\(rescanRunNumber) mergeCorrective=\\(mergeCorrectiveEnabledForRun ? \\"ON\\" : \\"OFF\\") reviews=\\(reviewInputText)")\n'
+          new = (
+              '        let mergeCorrectiveFlagText = mergeCorrectiveEnabledForRun ? "ON" : "OFF"\n'
+              '        DiagnosticLogger.log("feedback-rescan-input run=\\(rescanRunNumber) mergeCorrective=\\(mergeCorrectiveFlagText) reviews=\\(reviewInputText)")\n'
+          )
+          count = text.count(old)
+          if count != 1:
+              raise RuntimeError(f"generated rescan input log: expected 1 match, found {count}")
+          path.write_text(text.replace(old, new, 1), encoding="utf-8")
+          PY
           swiftc -frontend -parse VideoTargetFinder/*.swift
           python3 -m py_compile scripts/verify_source.py
           python3 scripts/verify_source.py
