@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "video": {
+    "duration_seconds": 1659.855,
+    "resolution": "1080x1920",
+    "fps": 59.84,
+    "labeling_status": "partial"
+  },
+  "labeling_policy": {
+    "continuity_rule": "Do not decide continuity from elapsed seconds alone. Treat a short interruption as the same appearance only when the same person remains visually continuous across it; otherwise split.",
+    "partial_visibility_rule": "Include time where the target remains identifiable despite partial visibility. Exclude frames where identity is not visually identifiable unless continuity across the interruption is independently confirmed.",
+    "unknown_rule": "Unreviewed gaps are unknown and must not be used as positive merge Authority."
+  },
+  "gap_labels": [
+    {
+      "left_existing_end": 620.350,
+      "right_existing_start": 622.838,
+      "accepted_hit_gap_seconds": 3.288,
+      "boundary_gap_seconds": 2.488,
+      "label": "same_appearance",
+      "authority": "DIAG-2 Build 35 visual continuity PASS plus user visual confirmation"
+    },
+    {
+      "left_existing_end": 612.133,
+      "right_existing_start": 619.550,
+      "boundary_gap_seconds": 7.417,
+      "label": "unknown",
+      "authority": "Not visually reviewed; must remain split in Corrective 1 fixture"
+    }
+  ],
+  "appearance_intervals": [],
+  "notes": [
+    "Full 27-minute appearance interval labeling is still required before the five-metric real-video quality gate can issue a formal PASS.",
+    "Corrective 1 unit fixtures may use the confirmed central gap but must not infer labels for unknown gaps."
+  ]
+}
