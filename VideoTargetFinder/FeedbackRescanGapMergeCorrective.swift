@@ -38,7 +38,6 @@ enum FeedbackRescanGapMergeReason: String, Sendable, Equatable {
     case candidateDoesNotCoverGap = "candidate-does-not-cover-gap"
     case gapTooLong = "gap-too-long"
     case rejectedSegmentBoundary = "rejected-segment-boundary"
-    case rejectedSegmentVeto = "rejected-segment-veto"
     case hardNegativeVeto = "hard-negative-veto"
     case insufficientInteriorHits = "insufficient-interior-hits"
     case excessiveHitlessSpan = "excessive-hitless-span"
@@ -92,16 +91,6 @@ enum FeedbackRescanGapMergePlanner {
 
         guard relevant.count >= 2 else {
             return FeedbackRescanGapMergePlan(groups: [], remap: [:], decisions: [])
-        }
-
-        // A user-rejected existing segment anywhere inside the candidate is a hard veto for
-        // this rescan candidate. Do not let another safe-looking gap within the same candidate
-        // partially merge around a segment the user explicitly marked as a false detection.
-        if relevant.contains(where: \.isRejected) {
-            let decisions = zip(relevant, relevant.dropFirst()).map { left, right in
-                rejectedCandidateDecision(left: left, right: right, evidence: evidence)
-            }
-            return FeedbackRescanGapMergePlan(groups: [], remap: [:], decisions: decisions)
         }
 
         var decisions: [FeedbackRescanGapDecision] = []
@@ -182,38 +171,6 @@ enum FeedbackRescanGapMergePlanner {
             groups: groups,
             remap: remap,
             decisions: decisions
-        )
-    }
-
-    private static func rejectedCandidateDecision(
-        left: FeedbackMergeExistingSegment,
-        right: FeedbackMergeExistingSegment,
-        evidence: FeedbackRescanGapEvidence
-    ) -> FeedbackRescanGapDecision {
-        let gapStart = left.endTime
-        let gapEnd = right.startTime
-        let epsilon: TimeInterval = 0.001
-        let interiorHits = evidence.acceptedHitTimes
-            .filter { $0 > gapStart + epsilon && $0 < gapEnd - epsilon }
-            .sorted()
-        let hardNegatives = evidence.hardNegativeTimes
-            .filter { $0 > gapStart + epsilon && $0 < gapEnd - epsilon }
-            .sorted()
-        return FeedbackRescanGapDecision(
-            leftSegmentID: left.id,
-            rightSegmentID: right.id,
-            gapStartTime: gapStart,
-            gapEndTime: gapEnd,
-            gapSpan: max(0, gapEnd - gapStart),
-            interiorHitCount: interiorHits.count,
-            maximumHitlessSpan: maxHitlessSpan(
-                gapStart: gapStart,
-                gapEnd: gapEnd,
-                interiorHits: interiorHits
-            ),
-            hardNegativeTimes: hardNegatives,
-            shouldMerge: false,
-            reason: .rejectedSegmentVeto
         )
     }
 
@@ -366,8 +323,9 @@ enum MergedLearnedReferenceIdentityPolicy {
 }
 
 enum ContinuityCorrectiveFeatureFlags {
-    // Corrective 1. A/B comparison can call the planner with enabled=false without changing runtime policy.
-    static let feedbackRescanGapMerge = true
+    // Runtime defaults only. The ViewModel snapshots the user-visible diagnostic toggle at
+    // feedback-rescan start; this constant must never silently enable Corrective 1.
+    static let defaultFeedbackRescanGapMerge = false
     // Corrective 2 is intentionally not connected yet.
     static let initialTierCBridge = false
 }
