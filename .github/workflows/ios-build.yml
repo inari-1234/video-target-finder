@@ -79,6 +79,12 @@ jobs:
           swiftc VideoTargetFinder/SegmentFeedbackMergeDiagnostics.swift scripts/test_diag2_rescan_merge.swift -o /tmp/diag2-rescan-merge-tests
           /tmp/diag2-rescan-merge-tests
 
+          swiftc VideoTargetFinder/FeedbackRescanGapMergeCorrective.swift scripts/test_feedback_rescan_gap_merge_corrective.swift -o /tmp/corrective1-gap-merge-tests
+          /tmp/corrective1-gap-merge-tests
+
+          swiftc VideoTargetFinder/ContinuityQualityGate.swift scripts/test_continuity_quality_gate.swift -o /tmp/continuity-quality-gate-tests
+          /tmp/continuity-quality-gate-tests
+
           swiftc VideoTargetFinder/VisionObjectTrackingEngine.swift VideoTargetFinder/SegmentContinuityAnalyzer.swift scripts/test_segment_visual_continuity_diagnostics.swift -o /tmp/segment-visual-continuity-diagnostic-tests
           /tmp/segment-visual-continuity-diagnostic-tests
 
@@ -107,18 +113,18 @@ jobs:
 
       - name: Package sideload IPA
         run: |
-          ./scripts/package_unsigned_ipa.sh             "$PWD/build-device/Build/Products/Release-iphoneos/VideoTargetFinder.app"             VideoTargetFinder-v0.32.0-build35-sideload.ipa
+          ./scripts/package_unsigned_ipa.sh             "$PWD/build-device/Build/Products/Release-iphoneos/VideoTargetFinder.app"             VideoTargetFinder-v0.32.0-build36-sideload.ipa
 
       - name: Verify IPA
         run: |
           rm -rf verify-ipa
           mkdir verify-ipa
           cd verify-ipa
-          unzip -q ../VideoTargetFinder-v0.32.0-build35-sideload.ipa
+          unzip -q ../VideoTargetFinder-v0.32.0-build36-sideload.ipa
           APP=Payload/VideoTargetFinder.app
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")" = "jp.inari1234.videotargetfinder"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")" = "0.32.0"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "35"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")" = "36"
           test "$(/usr/libexec/PlistBuddy -c 'Print :UIFileSharingEnabled' "$APP/Info.plist")" = "true"
           test "$(/usr/libexec/PlistBuddy -c 'Print :LSSupportsOpeningDocumentsInPlace' "$APP/Info.plist")" = "true"
           file "$APP/VideoTargetFinder" | grep -q arm64
@@ -127,15 +133,15 @@ jobs:
       - name: Upload sideload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: VideoTargetFinder-v0.32.0-build35-sideload-ipa
-          path: VideoTargetFinder-v0.32.0-build35-sideload.ipa
+          name: VideoTargetFinder-v0.32.0-build36-sideload-ipa
+          path: VideoTargetFinder-v0.32.0-build36-sideload.ipa
           retention-days: 14
 
       - name: Upload Xcode logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: VideoTargetFinder-v0.32.0-build35-xcode-logs
+          name: VideoTargetFinder-v0.32.0-build36-xcode-logs
           path: |
             xcodebuild-simulator.log
             xcodebuild-device.log
