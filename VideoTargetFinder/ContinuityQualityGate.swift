@@ -21,6 +21,19 @@ struct ContinuityQualityMetrics: Sendable, Equatable {
     let falsePositiveDuration: TimeInterval
     let fragmentsPerAppearance: [String: Int]
     let falseMergeCount: Int
+
+    var totalFragmentCount: Int {
+        fragmentsPerAppearance.values.reduce(0, +)
+    }
+
+    func passesNonRegressionGate(against baseline: ContinuityQualityMetrics) -> Bool {
+        let epsilon = 0.000_001
+        return appearanceDetectionRate + epsilon >= baseline.appearanceDetectionRate &&
+            timeCoverageRate + epsilon >= baseline.timeCoverageRate &&
+            falsePositiveDuration <= baseline.falsePositiveDuration + epsilon &&
+            totalFragmentCount <= baseline.totalFragmentCount &&
+            falseMergeCount == 0
+    }
 }
 
 enum ContinuityQualityGateAnalyzer {
