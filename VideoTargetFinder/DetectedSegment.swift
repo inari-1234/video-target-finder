@@ -3,6 +3,7 @@ import UIKit
 enum SegmentDiscoverySource: String, Sendable {
     case initial = "初回探索"
     case feedbackRescan = "学習再探索"
+    case mergedFeedback = "初回＋学習再探索"
 }
 
 
@@ -30,8 +31,13 @@ struct LearnedReference: Identifiable {
     let image: UIImage
     let sourceTime: TimeInterval
 
-    init(sourceSegmentID: UUID, image: UIImage, sourceTime: TimeInterval) {
-        self.id = UUID()
+    init(
+        id: UUID = UUID(),
+        sourceSegmentID: UUID,
+        image: UIImage,
+        sourceTime: TimeInterval
+    ) {
+        self.id = id
         self.sourceSegmentID = sourceSegmentID
         self.image = image
         self.sourceTime = sourceTime
@@ -58,6 +64,8 @@ struct DetectedSegment: Identifiable {
 
     var reviewState: SegmentReviewState = .unreviewed
     var isSelectedForExport: Bool = false
+    /// Corrective 1で既存区間同士を統合した後、ユーザーの再確認が必要であることを示す。
+    var requiresReviewAfterMerge: Bool = false
 
     init(
         id: UUID = UUID(),
@@ -74,7 +82,8 @@ struct DetectedSegment: Identifiable {
         aggregationScores: ReferenceAggregationScores? = nil,
         discoverySource: SegmentDiscoverySource = .initial,
         reviewState: SegmentReviewState = .unreviewed,
-        isSelectedForExport: Bool = false
+        isSelectedForExport: Bool = false,
+        requiresReviewAfterMerge: Bool = false
     ) {
         self.id = id
         self.startTime = startTime
@@ -91,6 +100,7 @@ struct DetectedSegment: Identifiable {
         self.discoverySource = discoverySource
         self.reviewState = reviewState
         self.isSelectedForExport = isSelectedForExport
+        self.requiresReviewAfterMerge = requiresReviewAfterMerge
     }
 
     var rangeText: String {
