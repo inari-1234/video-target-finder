@@ -43,6 +43,7 @@ struct ContinuityQualityGateTests {
         expect(corrected.fragmentsPerAppearance["A"] == 1, "corrective should reduce A to one fragment")
         expect(near(corrected.falsePositiveDuration, 0), "corrective must not add false-positive time")
         expect(corrected.falseMergeCount == 0, "corrective must preserve true split")
+        expect(corrected.passesNonRegressionGate(against: fragmented), "corrected metrics should pass the five-metric non-regression gate")
 
         let falselyMerged = ContinuityQualityGateAnalyzer.evaluate(
             groundTruth: truth,
@@ -50,6 +51,7 @@ struct ContinuityQualityGateTests {
         )
         expect(falselyMerged.falseMergeCount == 1, "one range spanning two appearances must be a false merge")
         expect(near(falselyMerged.falsePositiveDuration, 10), "gap between true appearances must count as false-positive time")
+        expect(!falselyMerged.passesNonRegressionGate(against: fragmented), "false merge must fail the five-metric gate even if coverage is high")
 
         if failures.isEmpty {
             print("Continuity quality gate tests: PASS")
