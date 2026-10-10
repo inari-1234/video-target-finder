@@ -82,6 +82,9 @@ jobs:
           swiftc VideoTargetFinder/FeedbackRescanGapMergeCorrective.swift scripts/test_feedback_rescan_gap_merge_corrective.swift -o /tmp/corrective1-gap-merge-tests
           /tmp/corrective1-gap-merge-tests
 
+          swiftc VideoTargetFinder/FeedbackRescanABDiagnostics.swift scripts/test_feedback_rescan_ab_diagnostics.swift -o /tmp/feedback-rescan-ab-tests
+          /tmp/feedback-rescan-ab-tests
+
           swiftc VideoTargetFinder/ContinuityQualityGate.swift scripts/test_continuity_quality_gate.swift -o /tmp/continuity-quality-gate-tests
           /tmp/continuity-quality-gate-tests
 
