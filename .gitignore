@@ -3,3 +3,5 @@ DerivedData/
 *.xcuserstate
 xcuserdata/
 VideoTargetFinder.xcodeproj/
+__pycache__/
+*.py[cod]
