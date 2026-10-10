@@ -1,0 +1,39 @@
+name: Corrective 1 Qualification Evidence
+
+on:
+  push:
+    branches:
+      - video-target-finder-candidate
+
+jobs:
+  evidence:
+    if: contains(github.event.head_commit.message, '[full-ci]')
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Corrective 1 gap merge regression
+        run: |
+          swiftc VideoTargetFinder/FeedbackRescanGapMergeCorrective.swift scripts/test_feedback_rescan_gap_merge_corrective.swift -o /tmp/corrective1-gap-merge-tests
+          /tmp/corrective1-gap-merge-tests | tee /tmp/gap-merge.log
+          grep -Fq "Feedback rescan gap merge corrective tests: PASS" /tmp/gap-merge.log
+          echo "QUALIFICATION 1/3: FeedbackRescanGapMergeCorrective PASS"
+
+      - name: Feedback rescan A/B replay regression
+        run: |
+          swiftc VideoTargetFinder/FeedbackRescanABDiagnostics.swift scripts/test_feedback_rescan_ab_diagnostics.swift -o /tmp/feedback-rescan-ab-tests
+          /tmp/feedback-rescan-ab-tests | tee /tmp/ab-replay.log
+          grep -Fq "Feedback rescan A/B diagnostics tests: PASS" /tmp/ab-replay.log
+          echo "QUALIFICATION 2/3: FeedbackRescanABDiagnostics PASS"
+
+      - name: Continuity five-metric quality gate regression
+        run: |
+          swiftc VideoTargetFinder/ContinuityQualityGate.swift scripts/test_continuity_quality_gate.swift -o /tmp/continuity-quality-gate-tests
+          /tmp/continuity-quality-gate-tests | tee /tmp/quality-gate.log
+          grep -Fq "Continuity quality gate tests: PASS" /tmp/quality-gate.log
+          echo "QUALIFICATION 3/3: ContinuityQualityGate PASS"
+
+      - name: Qualification summary
+        run: |
+          echo "Corrective 1 qualification evidence: 3/3 PASS"
