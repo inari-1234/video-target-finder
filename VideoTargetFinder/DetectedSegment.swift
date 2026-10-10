@@ -3,7 +3,7 @@ import UIKit
 enum SegmentDiscoverySource: String, Sendable {
     case initial = "初回探索"
     case feedbackRescan = "学習再探索"
-    case mergedFeedback = "初回＋学習再探索（統合済み・要確認）"
+    case mergedFeedback = "初回＋学習再探索"
 }
 
 
