@@ -66,7 +66,7 @@ struct FeedbackRescanGapMergeCorrectiveTests {
         expect(offPlan.remap.isEmpty, "feature OFF must not create remaps")
         expect(offPlan.decisions.allSatisfy { $0.reason == .featureDisabled }, "feature OFF reason mismatch")
 
-        // A rejected existing segment is a hard boundary.
+        // A rejected existing segment is a hard boundary only for gaps that touch it.
         let rejectedS3 = FeedbackMergeExistingSegment(
             id: s3.id,
             startTime: s3.startTime,
@@ -78,11 +78,11 @@ struct FeedbackRescanGapMergeCorrectiveTests {
             evidence: realEvidence,
             enabled: true
         )
-        expect(rejectedPlan.groups.isEmpty, "rejected boundary must block merge")
-        expect(rejectedPlan.decisions.first?.reason == .rejectedSegmentVeto, "rejected candidate veto reason mismatch")
+        expect(rejectedPlan.groups.isEmpty, "rejected boundary must block that merge")
+        expect(rejectedPlan.decisions.first?.reason == .rejectedSegmentBoundary, "rejected boundary reason mismatch")
 
-        // A rejected segment anywhere inside one spanning rescan candidate vetoes all partial merges.
-        // This prevents the planner from merging s2+s3 merely because the unsafe s1+s2 gap also split.
+        // A rejected segment inside a spanning rescan candidate must split locally rather than
+        // discarding unrelated safe merge opportunities elsewhere in the same candidate.
         let rejectedS1 = FeedbackMergeExistingSegment(
             id: s1.id,
             startTime: s1.startTime,
@@ -94,11 +94,11 @@ struct FeedbackRescanGapMergeCorrectiveTests {
             evidence: realEvidence,
             enabled: true
         )
-        expect(spanningRejectedPlan.groups.isEmpty, "any rejected segment spanned by a candidate must veto every merge")
-        expect(
-            spanningRejectedPlan.decisions.allSatisfy { $0.reason == .rejectedSegmentVeto },
-            "spanning rejected candidate must report global veto for every evaluated gap"
-        )
+        expect(spanningRejectedPlan.decisions.count == 2, "spanning rejected fixture should still evaluate each gap")
+        expect(spanningRejectedPlan.decisions[0].reason == .gapTooLong || spanningRejectedPlan.decisions[0].reason == .rejectedSegmentBoundary, "first unsafe boundary must stay split")
+        expect(spanningRejectedPlan.decisions[1].reason == .accepted, "safe central gap must remain eligible despite unrelated rejected segment")
+        expect(spanningRejectedPlan.groups.count == 1, "safe subgroup should still merge")
+        expect(spanningRejectedPlan.groups.first?.memberIDs == [s2.id, s3.id], "rejected segment must not enter the safe subgroup")
 
         // A hard negative inside the gap vetoes the merge.
         let hardNegativePlan = FeedbackRescanGapMergePlanner.plan(
