@@ -17,7 +17,7 @@ for p in Path(".").rglob("*"):
 
 project = Path("project.yml").read_text(encoding="utf-8")
 assert re.search(r"MARKETING_VERSION:\s*0\.32\.0", project), "Version 0.32.0 missing"
-assert re.search(r"CURRENT_PROJECT_VERSION:\s*36", project), "Build 36 missing"
+assert re.search(r"CURRENT_PROJECT_VERSION:\s*37", project), "Build 37 missing"
 assert "jp.inari1234.videotargetfinder" in project, "Bundle ID mismatch"
 assert "UIFileSharingEnabled: true" in project, "File Sharing must stay enabled"
 assert "LSSupportsOpeningDocumentsInPlace: true" in project, "Open-in-place must stay enabled"
@@ -43,6 +43,10 @@ view_model = Path("VideoTargetFinder/VideoAnalysisViewModel.swift").read_text(en
 assert "FeedbackRescanRunSummary" in report, "Per-rescan report model missing"
 assert "rescanRuns: [FeedbackRescanRunSummary]?" in report, "Backward-compatible rescan history missing"
 assert "feedbackRescanRuns" in view_model, "Runtime rescan history missing"
+assert "feedback-gap-decision flag=%@" in view_model and "mergeMembers=%d/%d" in view_model, "Corrective 1 merge-limit evidence logging missing"
+assert "feedback-final-segment-snapshot" in view_model, "Corrective 1 final segment snapshot logging missing"
+assert "feedback-learned-reference-remap" in view_model, "Merged learned-reference remap evidence missing"
+assert "feedback-learned-reference-reject" in view_model, "Merged learned-reference rejection evidence missing"
 assert "Feedback-rescan total added" in report, "Cumulative rescan label missing"
 assert "Feedback-rescan history" in report, "Per-run rescan history output missing"
 

@@ -46,6 +46,8 @@ struct FeedbackRescanGapMergeCorrectiveTests {
         expect(realPlan.decisions.count == 2, "real fixture should evaluate two absorbed gaps")
         expect(realPlan.decisions[0].reason == .gapTooLong, "7.417s gap must remain split")
         expect(realPlan.decisions[1].reason == .accepted, "2.488s central gap should pass evidence gate")
+        expect(realPlan.decisions[1].mergeLimitContext?.proposedSegmentCount == 2, "central merge should evaluate two members")
+        expect(near(realPlan.decisions[1].mergeLimitContext?.proposedDuration ?? -1, 5.827), "central merged duration context mismatch")
         expect(realPlan.groups.count == 1, "only the central pair should merge")
         if let group = realPlan.groups.first {
             expect(group.canonicalID == s2.id, "leftmost central segment must be canonical")
@@ -183,6 +185,9 @@ struct FeedbackRescanGapMergeCorrectiveTests {
         expect(limitPlan.groups.count == 1, "member cap should preserve the first safe subgroup")
         expect(limitPlan.groups.first?.memberIDs.count == 3, "member cap must stop at three existing segments")
         expect(limitPlan.decisions.last?.reason == .mergeLimitExceeded, "fourth member must be blocked by merge limit")
+        expect(limitPlan.decisions.last?.mergeLimitContext?.segmentCountExceeded == true, "member-cap failure must identify segment-count limit")
+        expect(limitPlan.decisions.last?.mergeLimitContext?.maximumSegmentCount == 3, "member-cap limit value mismatch")
+        expect(limitPlan.decisions.last?.mergeLimitContext?.durationExceeded == false, "member-cap fixture must not falsely report duration limit")
 
         // Maximum merged duration is also enforced even when every individual gap is short and dense.
         let longA = FeedbackMergeExistingSegment(id: UUID(), startTime: 0, endTime: 9.5, isRejected: false)
@@ -201,6 +206,9 @@ struct FeedbackRescanGapMergeCorrectiveTests {
         expect(durationPlan.groups.count == 1, "duration cap should still permit first safe pair")
         expect(durationPlan.groups.first?.memberIDs.count == 2, "duration cap must prevent adding third long member")
         expect(durationPlan.decisions.last?.reason == .mergeLimitExceeded, "duration cap must report merge-limit-exceeded")
+        expect(durationPlan.decisions.last?.mergeLimitContext?.durationExceeded == true, "duration-cap failure must identify duration limit")
+        expect(near(durationPlan.decisions.last?.mergeLimitContext?.maximumDuration ?? -1, 20.0), "duration-cap limit value mismatch")
+        expect(durationPlan.decisions.last?.mergeLimitContext?.segmentCountExceeded == false, "duration-cap fixture must not falsely report member limit")
 
         // Remap resolution is transitive and compressed.
         let a = UUID(uuidString: "10000000-0000-0000-0000-000000000001")!

@@ -524,6 +524,12 @@ final class VideoAnalysisViewModel: ObservableObject {
         let resolvedID = segmentIDRemap.resolve(id)
         guard let index = segments.firstIndex(where: { $0.id == resolvedID }) else { return }
         let changedDiscoverySource = segments[index].discoverySource
+        let learnedReferenceCountBeforeReview = learnedReferences.filter {
+            segmentIDRemap.resolve($0.sourceSegmentID) == resolvedID
+        }.count
+        let retainedReferenceCountBeforeReview = retainedMergedLearnedReferences.filter {
+            segmentIDRemap.resolve($0.sourceSegmentID) == resolvedID
+        }.count
         segments[index].reviewState = state
         segments[index].requiresReviewAfterMerge = false
         if changedDiscoverySource == .feedbackRescan || changedDiscoverySource == .mergedFeedback {
@@ -547,6 +553,17 @@ final class VideoAnalysisViewModel: ObservableObject {
         }
 
         refreshLearnedReferencesFromConfirmedSegments()
+        if case .rejected = state, changedDiscoverySource == .mergedFeedback {
+            let learnedReferenceCountAfterReview = learnedReferences.filter {
+                segmentIDRemap.resolve($0.sourceSegmentID) == resolvedID
+            }.count
+            let retainedReferenceCountAfterReview = retainedMergedLearnedReferences.filter {
+                segmentIDRemap.resolve($0.sourceSegmentID) == resolvedID
+            }.count
+            DiagnosticLogger.log(
+                "feedback-learned-reference-reject canonical=\(resolvedID.uuidString) learnedRemoved=\(max(0, learnedReferenceCountBeforeReview - learnedReferenceCountAfterReview)) retainedRemoved=\(max(0, retainedReferenceCountBeforeReview - retainedReferenceCountAfterReview)) learnedRemaining=\(learnedReferences.count) retainedRemaining=\(retainedMergedLearnedReferences.count)"
+            )
+        }
         feedbackThreshold = calculateSuggestedFeedbackThreshold()
         statusMessage = "判定を更新しました。正解 \(confirmedCount) / 誤検出 \(rejectedCount) / 未判定 \(unreviewedCount) / 学習見本 \(learnedReferences.count)"
         persistRecognitionReportSnapshot(reason: "review-updated")
@@ -951,6 +968,10 @@ final class VideoAnalysisViewModel: ObservableObject {
                     affectedCanonicalIDs: mergeOutcome.affectedCanonicalIDs
                 )
                 self.refreshLearnedReferencesFromConfirmedSegments()
+                self.logFeedbackFinalSegmentSnapshot(
+                    runNumber: rescanRunNumber,
+                    flagText: mergeCorrectiveFlagText
+                )
                 self.feedbackThreshold = self.calculateSuggestedFeedbackThreshold()
                 self.scanProgress = 1
                 self.scanPhase = "完了"
@@ -3184,6 +3205,30 @@ final class VideoAnalysisViewModel: ObservableObject {
         return images
     }
 
+    private func logFeedbackFinalSegmentSnapshot(runNumber: Int, flagText: String) {
+        let ordered = segments.sorted {
+            if abs($0.startTime - $1.startTime) > 0.000_001 { return $0.startTime < $1.startTime }
+            return $0.id.uuidString < $1.id.uuidString
+        }
+        DiagnosticLogger.log("feedback-final-segment-snapshot run=\(runNumber) flag=\(flagText) count=\(ordered.count)")
+        for (offset, segment) in ordered.enumerated() {
+            DiagnosticLogger.log(
+                String(
+                    format: "feedback-final-segment run=%d flag=%@ index=%d range=%.3f-%.3f source=%@ review=%@ export=%@ needsReview=%@",
+                    runNumber,
+                    flagText,
+                    offset + 1,
+                    segment.startTime,
+                    segment.endTime,
+                    segment.discoverySource.rawValue,
+                    segment.reviewState.rawValue,
+                    segment.isSelectedForExport ? "true" : "false",
+                    segment.requiresReviewAfterMerge ? "true" : "false"
+                )
+            )
+        }
+    }
+
     private func refreshLearnedReferencesFromConfirmedSegments() {
         let rejectedIDs = Set(segments.filter { $0.reviewState == .rejected }.map(\.id))
         retainedMergedLearnedReferences = retainedMergedLearnedReferences.compactMap { reference in
@@ -3243,9 +3288,12 @@ final class VideoAnalysisViewModel: ObservableObject {
         affectedCanonicalIDs: Set<UUID>
     ) {
         guard !affectedCanonicalIDs.isEmpty else { return }
+        let retainedBefore = retainedMergedLearnedReferences.count
+        var matched = 0
         for reference in previous {
             let canonicalID = segmentIDRemap.resolve(reference.sourceSegmentID)
             guard affectedCanonicalIDs.contains(canonicalID) else { continue }
+            matched += 1
             appendLearnedReferenceIfDistinct(
                 LearnedReference(
                     id: reference.id,
@@ -3256,6 +3304,9 @@ final class VideoAnalysisViewModel: ObservableObject {
                 to: &retainedMergedLearnedReferences
             )
         }
+        DiagnosticLogger.log(
+            "feedback-learned-reference-remap affectedCanonicals=\(affectedCanonicalIDs.count) matched=\(matched) retainedAdded=\(max(0, retainedMergedLearnedReferences.count - retainedBefore)) retainedTotal=\(retainedMergedLearnedReferences.count)"
+        )
     }
 
     // Build 35 compatibility path. When Corrective 1 is OFF this exact path is used and the
@@ -3404,9 +3455,26 @@ final class VideoAnalysisViewModel: ObservableObject {
                     let hardNegativeText = decision.hardNegativeTimes.isEmpty
                         ? "none"
                         : decision.hardNegativeTimes.map { String(format: "%.3f", $0) }.joined(separator: ",")
+                    let mergeLimitText: String
+                    if let context = decision.mergeLimitContext {
+                        var exceeded: [String] = []
+                        if context.segmentCountExceeded { exceeded.append("segment-count") }
+                        if context.durationExceeded { exceeded.append("merged-duration") }
+                        let exceededText = exceeded.isEmpty ? "none" : exceeded.joined(separator: ",")
+                        mergeLimitText = String(
+                            format: " mergeMembers=%d/%d mergedDuration=%.3fs/%.3fs exceeded=%@",
+                            context.proposedSegmentCount,
+                            context.maximumSegmentCount,
+                            context.proposedDuration,
+                            context.maximumDuration,
+                            exceededText
+                        )
+                    } else {
+                        mergeLimitText = ""
+                    }
                     DiagnosticLogger.log(
                         String(
-                            format: "feedback-gap-decision flag=%@ candidate=%.3f-%.3f gap=%.3f-%.3f span=%.3fs hits=%d maxHitless=%.3fs hardNegative=%@ decision=%@ reason=%@",
+                            format: "feedback-gap-decision flag=%@ candidate=%.3f-%.3f gap=%.3f-%.3f span=%.3fs hits=%d maxHitless=%.3fs hardNegative=%@ decision=%@ reason=%@%@",
                             flagEnabled ? "ON" : "OFF",
                             candidate.startTime,
                             candidate.endTime,
@@ -3417,7 +3485,8 @@ final class VideoAnalysisViewModel: ObservableObject {
                             decision.maximumHitlessSpan,
                             hardNegativeText,
                             decision.shouldMerge ? "merge" : "split",
-                            decision.reason.rawValue
+                            decision.reason.rawValue,
+                            mergeLimitText
                         )
                     )
                 }

@@ -45,6 +45,15 @@ enum FeedbackRescanGapMergeReason: String, Sendable, Equatable {
     case accepted = "accepted"
 }
 
+struct FeedbackRescanMergeLimitContext: Sendable, Equatable {
+    let proposedSegmentCount: Int
+    let maximumSegmentCount: Int
+    let proposedDuration: TimeInterval
+    let maximumDuration: TimeInterval
+    let segmentCountExceeded: Bool
+    let durationExceeded: Bool
+}
+
 struct FeedbackRescanGapDecision: Sendable, Equatable {
     let leftSegmentID: UUID
     let rightSegmentID: UUID
@@ -56,6 +65,7 @@ struct FeedbackRescanGapDecision: Sendable, Equatable {
     let hardNegativeTimes: [TimeInterval]
     let shouldMerge: Bool
     let reason: FeedbackRescanGapMergeReason
+    let mergeLimitContext: FeedbackRescanMergeLimitContext?
 }
 
 struct FeedbackRescanMergeGroup: Sendable, Equatable {
@@ -133,8 +143,18 @@ enum FeedbackRescanGapMergePlanner {
 
                 let proposedStart = proposedMembers.map(\.startTime).min() ?? left.startTime
                 let proposedEnd = proposedMembers.map(\.endTime).max() ?? right.endTime
-                if proposedMembers.count > policy.maximumMergedSegmentCount ||
-                    proposedEnd - proposedStart > policy.maximumMergedDuration {
+                let proposedDuration = proposedEnd - proposedStart
+                let segmentCountExceeded = proposedMembers.count > policy.maximumMergedSegmentCount
+                let durationExceeded = proposedDuration > policy.maximumMergedDuration
+                let limitContext = FeedbackRescanMergeLimitContext(
+                    proposedSegmentCount: proposedMembers.count,
+                    maximumSegmentCount: policy.maximumMergedSegmentCount,
+                    proposedDuration: proposedDuration,
+                    maximumDuration: policy.maximumMergedDuration,
+                    segmentCountExceeded: segmentCountExceeded,
+                    durationExceeded: durationExceeded
+                )
+                if segmentCountExceeded || durationExceeded {
                     decision = FeedbackRescanGapDecision(
                         leftSegmentID: decision.leftSegmentID,
                         rightSegmentID: decision.rightSegmentID,
@@ -145,11 +165,25 @@ enum FeedbackRescanGapMergePlanner {
                         maximumHitlessSpan: decision.maximumHitlessSpan,
                         hardNegativeTimes: decision.hardNegativeTimes,
                         shouldMerge: false,
-                        reason: .mergeLimitExceeded
+                        reason: .mergeLimitExceeded,
+                        mergeLimitContext: limitContext
                     )
                     finalizeCurrentGroup()
                     currentGroup = [right]
                 } else {
+                    decision = FeedbackRescanGapDecision(
+                        leftSegmentID: decision.leftSegmentID,
+                        rightSegmentID: decision.rightSegmentID,
+                        gapStartTime: decision.gapStartTime,
+                        gapEndTime: decision.gapEndTime,
+                        gapSpan: decision.gapSpan,
+                        interiorHitCount: decision.interiorHitCount,
+                        maximumHitlessSpan: decision.maximumHitlessSpan,
+                        hardNegativeTimes: decision.hardNegativeTimes,
+                        shouldMerge: decision.shouldMerge,
+                        reason: decision.reason,
+                        mergeLimitContext: limitContext
+                    )
                     currentGroup = proposedMembers
                 }
             } else {
@@ -208,7 +242,8 @@ enum FeedbackRescanGapMergePlanner {
                 maximumHitlessSpan: maximumHitlessSpan,
                 hardNegativeTimes: hardNegatives,
                 shouldMerge: shouldMerge,
-                reason: reason
+                reason: reason,
+                mergeLimitContext: nil
             )
         }
 
