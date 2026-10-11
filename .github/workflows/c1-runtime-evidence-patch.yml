@@ -22,7 +22,6 @@ jobs:
         run: |
           python3 scripts/apply_c1_runtime_evidence_patch.py
           rm scripts/apply_c1_runtime_evidence_patch.py
-          rm .github/workflows/c1-runtime-evidence-patch.yml
 
       - name: Static verification
         run: |
